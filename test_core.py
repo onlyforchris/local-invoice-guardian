@@ -19,6 +19,13 @@ def main():
     assert app.classify_text("项目名称：停车费")[0] == "transport"
     assert app.classify_text("高德打车网约车服务")[0] == "transport"
     assert app.classify_text("员工下午茶餐饮")[0] == "benefit"
+    assert app.classify_text("项目名称：休闲零食食品")[0] == "benefit"
+    assert app.classify_text("项目名称：宴请礼品")[0] == "hospitality"
+    broken = "发票号码：\x002\x006\x003\x001\x007\x009\x000\x007\x001\x005\x000\x009\x000\x000\x000\x007\x002\x000\x003\x003\n2026^t09g\b07\n价税合计（小写）\x00¥\x001\x00.\x009\x006"
+    fields = app.extract_fields(broken)
+    assert fields["no"] == "26317907150900072033"
+    assert fields["date"] == "2026-09-07"
+    assert fields["amount_cents"] == 196
     assert app.validate_categories(app.DEFAULT_CATEGORIES)
     print("core checks: ok")
 
