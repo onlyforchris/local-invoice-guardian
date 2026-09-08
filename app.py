@@ -279,7 +279,36 @@ def file_md5(path, chunk=1 << 20):
 
 
 def zhipu_key():
-    return os.environ.get("ZHIPUAI_API_KEY") or os.environ.get("ZAI_API_KEY") or ""
+    """读智谱 API Key：进程环境变量优先，再实时读 Windows 注册表。
+
+    实时读注册表是为了绕开 Windows 经典坑：用户设置"用户级环境变量"后，
+    已在运行的 explorer/终端不会刷新环境，之后双击启动的程序全部继承
+    旧快照，os.environ 里永远看不到新变量。直接查注册表则立即生效，
+    无需注销/重启。
+    """
+    for name in ("ZHIPUAI_API_KEY", "ZAI_API_KEY"):
+        v = os.environ.get(name)
+        if v and v.strip():
+            return v.strip()
+    try:
+        import winreg
+    except ImportError:  # 非 Windows
+        return ""
+    for root, path in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                       (winreg.HKEY_LOCAL_MACHINE,
+                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, path) as k:
+                for name in ("ZHIPUAI_API_KEY", "ZAI_API_KEY"):
+                    try:
+                        v, _t = winreg.QueryValueEx(k, name)
+                    except OSError:
+                        continue
+                    if v and v.strip():
+                        return v.strip().strip('"')
+        except OSError:
+            continue
+    return ""
 
 
 def ocr_b64(b64, mime, model="glm-4v-flash", timeout=60):
