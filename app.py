@@ -53,7 +53,7 @@ LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
 ENGINE_VER = 6  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -643,6 +643,7 @@ class Handler(BaseHTTPRequestHandler):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -660,7 +661,9 @@ class Handler(BaseHTTPRequestHandler):
                                   "text/html; charset=utf-8")
             return self._send(404, "缺少 index.html")
         if u.path == "/api/config":
-            return self._send(200, json.dumps(load_config()))
+            cfg = load_config()
+            cfg["ocr_key_configured"] = bool(zhipu_key())
+            return self._send(200, json.dumps(cfg))
         if u.path == "/api/categories":
             return self._send(200, json.dumps(get_categories(), ensure_ascii=False))
         if u.path == "/api/folders":
@@ -745,7 +748,7 @@ class Handler(BaseHTTPRequestHandler):
                           "ocr_key": bool(zhipu_key()), "dup_pairs": len(pairs),
                           "reused": reused, "watch_count": watch_count,
                           "used_count": used_count},
-                "config": cfg,
+                "config": {**cfg, "ocr_key_configured": bool(zhipu_key())},
             }, ensure_ascii=False))
         if u.path == "/api/override":
             body = self._read_json()
