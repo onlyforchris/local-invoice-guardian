@@ -52,8 +52,8 @@ except Exception:
 LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
-ENGINE_VER = 6  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.4"
+ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
+APP_VERSION = "1.1.5"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -215,7 +215,7 @@ def extract_fields(text, fname="", company_names=None):
     # 金额：价税合计（小写）→ （小写）→ 合计 → 最大 ¥
     amt = None
     for pat in (r"价税合计[^¥￥]{0,24}[¥￥]\s*([0-9]+\.\d{2})",
-                r"[（(]\s*小写\s*[)）]\s*[¥￥]?\s*([0-9]+\.\d{2})",
+                r"[（(]\s*小写\s*[)）]\s*[:：]?\s*[¥￥]?\s*([0-9]+\.\d{2})",
                 r"(?:合计|合计金额)[^0-9¥￥]{0,12}([0-9]+\.\d{2})"):
         m = re.search(pat, t2)
         if m:
@@ -744,7 +744,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "records": recs, "categories": cats,
                 "stats": {"total": len(recs), "dup": n_dup, "used": n_used,
-                          "warn": n_warn, "amount_ok": n_amt,
+                          "warn": sum(bool(r.get("in_watch") and r.get("warn")) for r in recs),
+                          "warn_all": n_warn, "amount_ok": n_amt,
                           "ocr_key": bool(zhipu_key()), "dup_pairs": len(pairs),
                           "reused": reused, "watch_count": watch_count,
                           "used_count": used_count},
