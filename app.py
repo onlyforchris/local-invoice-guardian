@@ -53,7 +53,7 @@ LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
 ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
