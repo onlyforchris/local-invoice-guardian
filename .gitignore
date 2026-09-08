@@ -7,3 +7,4 @@ __pycache__/
 config.json
 invoice_ledger.json
 release/
+python_path.txt
