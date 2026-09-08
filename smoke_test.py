@@ -17,9 +17,11 @@ def call(path, body=None):
 # 1) 首页
 s, html = call("/")
 print("GET /            ->", s, "html bytes:", len(html), "| 含标题:", "发票管家" in html.decode("utf-8", "ignore"))
+assert "本地 Python 识别" in html.decode("utf-8") and "智谱 API Key" in html.decode("utf-8")
 # 2) config / folders / categories
 s, cfg = call("/api/config")
 print("GET /api/config  ->", s, json.loads(cfg))
+assert isinstance(json.loads(cfg)["ocr_key_configured"], bool)
 s, folders = call("/api/folders")
 print("GET /api/folders ->", s, json.loads(folders)["folders"])
 s, cats = call("/api/categories")
