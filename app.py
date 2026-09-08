@@ -35,7 +35,8 @@ from urllib.parse import urlparse, parse_qs
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKBUDDY_PACKAGES = os.path.expanduser(r"~/.workbuddy/binaries/python/envs/site-packages")
 if os.path.isdir(WORKBUDDY_PACKAGES):
-    sys.path.insert(0, WORKBUDDY_PACKAGES)
+    # 仅作兜底，避免覆盖当前 Python 中与其 ABI 匹配的 Pillow 等二进制包。
+    sys.path.append(WORKBUDDY_PACKAGES)
 try:
     from pypdf import PdfReader
 except Exception:
@@ -50,8 +51,8 @@ except Exception:
 LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
-ENGINE_VER = 4  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.1"
+ENGINE_VER = 5  # 引擎版本；升级后旧台账自动失效重解析
+APP_VERSION = "1.1.2"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -61,14 +62,14 @@ CATALOG = [
     {"id": "travel", "label": "差旅费", "note": "机票、火车票、住宿、打车、订票手续费"},
     {"id": "transport", "label": "交通费", "note": "网约车、加油、停车、过路、租车"},
     {"id": "communication", "label": "通讯费", "note": "办公电话、宽带、通信服务"},
-    {"id": "hospitality", "label": "业务招待费", "note": "餐饮招待、茶叶、礼品、食品"},
+    {"id": "hospitality", "label": "业务招待费", "note": "餐饮招待、茶叶、礼品、宴请"},
     {"id": "meeting", "label": "会议费", "note": "场地、资料"},
     {"id": "training", "label": "培训费", "note": "培训、报名费"},
     {"id": "advertising", "label": "广告宣传费", "note": "广告服务费、制作费、推广费"},
     {"id": "service", "label": "服务费", "note": "技术服务费、招聘费"},
     {"id": "rd", "label": "研发费用", "note": "专利/软著、研发设备、认证检测"},
     {"id": "property", "label": "房租物业水电", "note": "租赁、物业、水电"},
-    {"id": "benefit", "label": "人事福利", "note": "团建、下午茶、餐饮"},
+    {"id": "benefit", "label": "人事福利", "note": "团建、下午茶、餐饮、零食、食品"},
     {"id": "other", "label": "其他/待分类", "note": "建议人工补充规则"},
 ]
 CAT_IDS = [c["id"] for c in CATALOG]
@@ -79,14 +80,14 @@ RULES = [
     ("travel", ["机票", "火车票", "住宿", "打车", "订票手续费", "行程单", "高铁", "动车", "酒店", "宾馆"]),
     ("transport", ["网约车", "加油", "停车", "过路", "租车", "滴滴", "出租车", "通行费", "代驾"]),
     ("communication", ["办公电话", "宽带", "通信服务", "中国移动", "中国联通", "中国电信", "话费"]),
-    ("hospitality", ["餐饮招待", "业务招待", "宴请", "茶叶", "礼品", "食品"]),
+    ("hospitality", ["餐饮招待", "宴请", "茶叶", "礼品"]),
     ("meeting", ["会议场地", "会议资料", "会议费"]),
     ("training", ["培训", "报名费", "课程", "训练营", "考试费"]),
     ("advertising", ["广告服务费", "制作费", "推广费", "广告宣传"]),
     ("service", ["技术服务费", "招聘费", "软件服务", "云服务", "咨询服务"]),
     ("rd", ["专利", "软著", "软件著作权", "研发设备", "认证检测", "认证费", "检测费"]),
     ("property", ["房屋租赁", "租赁费", "物业", "水费", "电费", "水电"]),
-    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "外卖", "咖啡", "奶茶"]),
+    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "外卖", "咖啡", "奶茶", "零食", "食品"]),
 ]
 
 DEFAULT_CATEGORIES = [
@@ -169,7 +170,8 @@ def _companies(text):
 
 def extract_fields(text, fname="", company_names=None):
     """返回字段 dict。金额以「价税合计（小写）」为准。"""
-    t = text or ""
+    # 一些通行费 PDF 会在每个字符前插入 NUL；先清理再做结构化匹配。
+    t = (text or "").replace("\x00", "")
     t2 = re.sub(r"(\d),(?=\d{3})", r"\1", t)
     f = {"no": None, "code": None, "date": None, "amount_cents": None,
          "seller": None, "buyer": None, "kind": "其他", "items": []}
@@ -195,6 +197,12 @@ def extract_fields(text, fname="", company_names=None):
         if dates:
             dates = sorted(dates, key=lambda x: abs(x.start() - anchor))
             f["date"] = norm_date(dates[0].group(0))
+    if not f["date"] and f["no"]:
+        # 兼容形如 2026^t09g\b07 的损坏文本层，仅在发票号后的小窗口内兜底。
+        tail = t2[t2.find(f["no"]) + len(f["no"]):][:120]
+        m = re.search(r"(20\d{2})\D{0,6}(\d{2})\D{0,6}(\d{2})", tail)
+        if m and _valid_date(*m.groups()):
+            f["date"] = "%04d-%02d-%02d" % tuple(int(x) for x in m.groups())
 
     # 金额：价税合计（小写）→ （小写）→ 合计 → 最大 ¥
     amt = None
@@ -326,14 +334,18 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
     ext = os.path.splitext(path)[1].lower()
     warn = None
     text = ""
+    pdf_text = ""
+    did_ocr = False
     if ext == ".pdf":
         if PdfReader is not None:
             try:
                 text = "".join((p.extract_text() or "") for p in PdfReader(path).pages)
+                pdf_text = text
             except Exception as e:
                 warn = "PDF解析异常:%s" % e
-        # 文本过少(疑无文本层)时尝试渲染 OCR
-        if len(re.sub(r"\s", "", text or "")) < 40 and ocr_enabled and zhipu_key():
+        # 文本过少或字符编码损坏时尝试渲染 OCR。
+        needs_ocr = len(re.sub(r"\s", "", text or "")) < 40 or text.count("\x00") >= 8
+        if needs_ocr and ocr_enabled and zhipu_key():
             try:
                 pages = render_pdf_pages(path)
                 chunks = []
@@ -344,23 +356,40 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
                         warn = "PDF页OCR失败:%s" % e
                 if chunks:
                     text = "\n".join(chunks)
-                    warn = "PDF经渲染OCR识别"
+                    warn = None
+                    did_ocr = True
             except Exception as e:
                 warn = "PDF渲染失败:%s" % e
-        if not warn and len(re.sub(r"\s", "", text or "")) < 40:
-            warn = "PDF无文本层且未启用OCR(需配置ZHIPUAI_API_KEY)"
+        if not warn and needs_ocr and not did_ocr:
+            warn = "PDF无可用文本层且未完成OCR(需配置ZHIPUAI_API_KEY)"
     else:  # 图片
         if ocr_enabled and zhipu_key():
             try:
                 text = ocr_image_file(path, ocr_model)
+                did_ocr = True
                 warn = None if text.strip() else "OCR返回为空"
             except Exception as e:
                 warn = "OCR失败:%s" % e
         else:
             warn = "图片发票未启用OCR(需配置ZHIPUAI_API_KEY)"
     fields = extract_fields(text or "", os.path.basename(path), company_names)
+    if did_ocr and pdf_text:
+        fallback = extract_fields(pdf_text, os.path.basename(path), company_names)
+        # 数字字段优先采用本地文本层；OCR 主要补齐损坏的中文购销方。
+        for key in ("no", "code", "date", "amount_cents"):
+            if fallback.get(key) is not None:
+                fields[key] = fallback[key]
+        for key in ("seller", "buyer"):
+            if fields.get(key) is None and fallback.get(key) is not None:
+                fields[key] = fallback[key]
+    missing = [name for key, name in (("no", "号码"), ("amount_cents", "金额"),
+                                      ("date", "日期"), ("seller", "销售方"))
+               if fields.get(key) is None]
+    if missing:
+        detail = "需复核：%s未识别" % "、".join(missing)
+        warn = "%s；%s" % (warn, detail) if warn else detail
     fields["class_text"] = (text or "")[:6000]
-    fields["ocr"] = bool(ext != ".pdf" or (warn and "OCR" in (warn or "")))
+    fields["ocr"] = did_ocr
     return fields, warn
 
 
@@ -485,6 +514,9 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
         rec = led["records"].get(p)
         unchanged = rec and rec.get("mtime") == st.st_mtime and rec.get("size") == st.st_size
         if unchanged and rec.get("parse_sig") == parse_sig:
+            if (rec.get("ocr") and rec.get("warn") == "PDF无可用文本层且未完成OCR(需配置ZHIPUAI_API_KEY)"
+                    and all(rec.get(k) is not None for k in ("no", "amount_cents", "date", "seller"))):
+                rec["warn"] = None
             if rec.get("cat_rule") == "人工":
                 rec["cat_label"] = next((c["label"] for c in categories
                                           if c["id"] == rec.get("cat_id")), "其他/待分类")
@@ -537,6 +569,8 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
     recs = records_in_dirs(led, all_dirs)
     for r in recs:
         folder_used = any(is_within(r["path"], d) for d in used_set)
+        r["in_watch"] = any(is_within(r["path"], d) for d in (watch_dirs or []))
+        r["in_used_dir"] = folder_used
         r["is_used"] = bool(r.get("used_override")) if r.get("used_override_set") else folder_used
     idx = {}
     for r in recs:
@@ -693,13 +727,16 @@ class Handler(BaseHTTPRequestHandler):
             recs.sort(key=lambda r: (-1 if r["dups"] else 0, -1 if r["is_used"] else 0,
                                      -(r["amount_cents"] or 0)))
             pairs = {tuple(sorted((r["path"], d["path"]))) for r in recs for d in r["dups"]}
-            reused = sum(not r["is_used"] and any(d.get("is_used") for d in r["dups"]) for r in recs)
+            reused = sum(r.get("in_watch") and any(d.get("is_used") for d in r["dups"]) for r in recs)
+            watch_count = sum(bool(r.get("in_watch")) for r in recs)
+            used_count = sum(bool(r.get("in_used_dir")) for r in recs)
             return self._send(200, json.dumps({
                 "records": recs, "categories": cats,
                 "stats": {"total": len(recs), "dup": n_dup, "used": n_used,
                           "warn": n_warn, "amount_ok": n_amt,
                           "ocr_key": bool(zhipu_key()), "dup_pairs": len(pairs),
-                          "reused": reused},
+                          "reused": reused, "watch_count": watch_count,
+                          "used_count": used_count},
                 "config": cfg,
             }, ensure_ascii=False))
         if u.path == "/api/override":
