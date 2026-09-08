@@ -70,6 +70,9 @@ echo       依赖已安装过，跳过安装。
 
 :start
 >python_path.txt echo %PYEXE%
+rem kill previous server listening on port 8765
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
+timeout /t 1 >nul
 echo.
 echo [4/4] 启动发票管家 ...
 echo       服务地址 http://127.0.0.1:8765 ，浏览器将自动打开。

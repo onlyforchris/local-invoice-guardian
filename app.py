@@ -558,7 +558,8 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
     cat_sig = hashlib.sha256(json.dumps(categories, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
 
-    # 1) 增量解析
+    # 1) 增量解析（AI OCR 走网络，线程池并发提速；结果按序写回台账）
+    todo = []
     for p in iter_invoice_files(all_dirs):
         st = os.stat(p)
         rec = led["records"].get(p)
@@ -576,37 +577,50 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
                            cat_label=next((c["label"] for c in categories if c["id"] == cid), cid),
                            cat_sig=cat_sig)
             continue
-        fields, warn = parse_file(p, ocr_enabled, ocr_model, buyers)
-        md5hex = file_md5(p)
-        fp = fingerprint(fields, md5hex)
-        cls_text = os.path.basename(p) + "|" + (fields.get("seller") or "") + "|" + \
-                   " ".join(fields.get("items") or []) + "|" + \
-                   " ".join(fields.get("svc") or []) + "|" + (fields.get("kind") or "") + "|" + \
-                   fields.get("class_text", "")
-        rec = {
-            "path": p, "folder": os.path.basename(os.path.dirname(p)),
-            "fname": os.path.basename(p), "size": st.st_size, "mtime": st.st_mtime,
-            "md5": md5hex,
-            "no": fields.get("no"), "code": fields.get("code"),
-            "date": fields.get("date"), "amount_cents": fields.get("amount_cents"),
-            "seller": fields.get("seller"), "buyer": fields.get("buyer"),
-            "kind": fields.get("kind"), "items": fields.get("items"),
-            "svc": fields.get("svc"),
-            "ocr": fields.get("ocr", False), "warn": warn,
-            "fp": fp, "cls_text": cls_text[:6000], "parse_sig": parse_sig, "cat_sig": cat_sig,
-            "cat_id": rec.get("cat_id") if rec and rec.get("cat_rule") == "人工" else None,
-            "cat_label": rec.get("cat_label") if rec and rec.get("cat_rule") == "人工" else None,
-            "cat_rule": rec.get("cat_rule") if rec and rec.get("cat_rule") == "人工" else None,
-            "used_override": rec.get("used_override", False) if rec else False,
-            "used_override_set": rec.get("used_override_set", False) if rec else False,
-            "first_seen": rec.get("first_seen", time.time()) if rec else time.time(),
-            "updated": time.time(),
-        }
-        cid, rule = classify_text(rec["cls_text"], categories)
-        if rec["cat_id"] is None:
-            rec["cat_id"], rec["cat_rule"] = cid, rule
-            rec["cat_label"] = next((c["label"] for c in categories if c["id"] == cid), cid)
-        led["records"][p] = rec
+        todo.append((p, st))
+    if todo:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _parse_one(path):
+            try:
+                return parse_file(path, ocr_enabled, ocr_model, buyers)
+            except Exception as e:  # 文件被占用/删除等，不让单张失败拖垮整轮扫描
+                return {"ocr": False}, "解析失败:%s" % e
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            parsed = list(ex.map(_parse_one, [p for p, _st in todo]))
+        for (p, st), (fields, warn) in zip(todo, parsed):
+            old = led["records"].get(p)
+            md5hex = file_md5(p)
+            fp = fingerprint(fields, md5hex)
+            cls_text = os.path.basename(p) + "|" + (fields.get("seller") or "") + "|" + \
+                " ".join(fields.get("items") or []) + "|" + \
+                " ".join(fields.get("svc") or []) + "|" + (fields.get("kind") or "") + "|" + \
+                fields.get("class_text", "")
+            rec = {
+                "path": p, "folder": os.path.basename(os.path.dirname(p)),
+                "fname": os.path.basename(p), "size": st.st_size, "mtime": st.st_mtime,
+                "md5": md5hex,
+                "no": fields.get("no"), "code": fields.get("code"),
+                "date": fields.get("date"), "amount_cents": fields.get("amount_cents"),
+                "seller": fields.get("seller"), "buyer": fields.get("buyer"),
+                "kind": fields.get("kind"), "items": fields.get("items"),
+                "svc": fields.get("svc"),
+                "ocr": fields.get("ocr", False), "warn": warn,
+                "fp": fp, "cls_text": cls_text[:6000], "parse_sig": parse_sig, "cat_sig": cat_sig,
+                "cat_id": old.get("cat_id") if old and old.get("cat_rule") == "人工" else None,
+                "cat_label": old.get("cat_label") if old and old.get("cat_rule") == "人工" else None,
+                "cat_rule": old.get("cat_rule") if old and old.get("cat_rule") == "人工" else None,
+                "used_override": old.get("used_override", False) if old else False,
+                "used_override_set": old.get("used_override_set", False) if old else False,
+                "first_seen": old.get("first_seen", time.time()) if old else time.time(),
+                "updated": time.time(),
+            }
+            cid, rule = classify_text(rec["cls_text"], categories)
+            if rec["cat_id"] is None:
+                rec["cat_id"], rec["cat_rule"] = cid, rule
+                rec["cat_label"] = next((c["label"] for c in categories if c["id"] == cid), cid)
+            led["records"][p] = rec
 
     # 2) 清理已从配置目录消失的记录
     cfg_prefixes = tuple(os.path.normpath(d) for d in all_dirs if d)

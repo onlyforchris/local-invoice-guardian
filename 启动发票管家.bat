@@ -1,6 +1,9 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+rem kill previous server listening on port 8765
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
+timeout /t 1 >nul
 if exist ".venv\Scripts\python.exe" goto venv
 if not exist "python_path.txt" goto chain
 set /p PYCMD=<python_path.txt
