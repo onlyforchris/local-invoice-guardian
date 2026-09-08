@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>发票管家</title>
+<style>
+:root{--blue:#3157d5;--ink:#172033;--muted:#667085;--line:#e4e7ec;--bg:#f6f7f9;--red:#c92a2a;--amber:#9a6700}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
+button,input,select{font:inherit}button{cursor:pointer}.wrap{width:min(1180px,calc(100% - 32px));margin:auto}
+header{background:#fff;border-bottom:1px solid var(--line)}header .wrap{height:64px;display:flex;align-items:center;justify-content:space-between}
+h1{font-size:20px;margin:0}h1 small{font-size:13px;font-weight:400;color:var(--muted);margin-left:8px}
+main{padding:24px 0 56px}.card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 8px #10182808}
+.scan{padding:22px}.scan-head{display:flex;align-items:flex-end;gap:12px}.field{flex:1;min-width:0}.field label{display:block;font-weight:600;margin:0 0 7px}
+input,select{width:100%;border:1px solid #d0d5dd;border-radius:8px;background:#fff;color:var(--ink);padding:10px 12px;outline:none}
+input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px #3157d51a}
+.primary{border:0;border-radius:8px;background:var(--blue);color:#fff;font-weight:700;padding:11px 22px;white-space:nowrap}.primary:disabled{opacity:.55;cursor:wait}
+.secondary,.ghost,.danger{border:1px solid #d0d5dd;border-radius:8px;background:#fff;padding:8px 13px;color:var(--ink)}.danger{color:var(--red)}
+details{margin-top:14px}summary{color:var(--blue);cursor:pointer;user-select:none}.advanced{display:grid;grid-template-columns:1fr 1fr 160px;gap:14px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.hint{color:var(--muted);font-size:12px;margin-top:5px}.notice{display:none;margin-top:14px;border-radius:9px;padding:10px 12px}.notice.red{display:block;background:#fff1f0;color:#a61b1b}.notice.info{display:block;background:#eef4ff;color:#2446a8}
+.summary{display:none;margin:16px 0;padding:14px 18px;align-items:center;gap:24px}.summary.show{display:flex}.metric b{font-size:19px;margin-right:3px}.metric span{color:var(--muted)}.metric.risk b{color:var(--red)}
+.results{display:none}.results.show{display:block}.toolbar{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs{display:flex;background:#f2f4f7;border-radius:8px;padding:3px}.tabs button{border:0;background:transparent;padding:7px 12px;border-radius:6px;color:var(--muted)}.tabs button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #10182820;font-weight:600}
+.search{flex:1;min-width:190px;max-width:360px}.spacer{flex:1}.table-wrap{overflow:auto;max-height:620px}table{width:100%;border-collapse:collapse;min-width:930px}th{position:sticky;top:0;background:#f9fafb;color:var(--muted);font-size:12px;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:12px;border-bottom:1px solid #f0f1f3;vertical-align:top}tr.risk{background:#fff8f7}.amount{font-weight:650}.muted{color:var(--muted)}
+.badge{display:inline-block;border:0;border-radius:999px;padding:4px 9px;background:#eef2ff;color:#2949b8;font-size:12px}.badge.used{background:#eef2f0;color:#496057}.dup{color:var(--red);font-size:12px;margin-bottom:3px}.warn{color:var(--amber);font-size:12px}.empty{text-align:center;color:var(--muted);padding:42px}
+.foot{padding:10px 14px;color:var(--muted);font-size:12px}.row-actions{display:flex;gap:8px;align-items:center}.row-actions select{min-width:135px;padding:7px}.subcat{font-size:12px;color:var(--muted);margin-top:3px}
+dialog{width:min(760px,calc(100% - 28px));border:0;border-radius:14px;padding:0;box-shadow:0 24px 60px #10182840}dialog::backdrop{background:#10182866}.dialog-head,.dialog-foot{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}.dialog-foot{border:0;border-top:1px solid var(--line);justify-content:flex-end;gap:10px}.dialog-body{padding:16px 20px;max-height:65vh;overflow:auto}.cat-cols,.cat-row{display:grid;grid-template-columns:170px 1fr 64px;gap:8px;margin-bottom:8px;align-items:start}.cat-cols{color:var(--muted);font-size:12px;padding:0 4px}.cat-row input{padding:8px}.dialog-note{color:var(--muted);margin:0 0 14px}
+@media(max-width:760px){.wrap{width:min(100% - 20px,1180px)}header .wrap{height:56px}h1 small{display:none}main{padding-top:12px}.scan{padding:16px}.scan-head{display:grid}.advanced{grid-template-columns:1fr}.primary{width:100%}.summary.show{display:grid;grid-template-columns:1fr 1fr;gap:10px}.spacer{display:none}.toolbar>.secondary{padding:7px 9px}.cat-row{grid-template-columns:1fr}.cat-row .danger{justify-self:start}}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>发票管家 <small>v{{APP_VERSION}} · 本地内容查重与分类</small></h1><button class="ghost" type="button" onclick="openCategories()">维护分类</button></div></header>
+<main class="wrap">
+  <section class="card scan" aria-labelledby="scanTitle">
+    <div class="scan-head">
+      <div class="field"><label id="scanTitle" for="watchDir">待查发票文件夹</label><input id="watchDir" list="folderOptions" placeholder="例如 C:\发票\本月"></div>
+      <div class="field"><label for="usedDirs">已使用发票库</label><input id="usedDirs" list="folderOptions" placeholder="多个文件夹用分号隔开"></div>
+      <button id="scanBtn" class="primary" type="button" onclick="doScan()">开始查重</button>
+    </div>
+    <datalist id="folderOptions"></datalist>
+    <details>
+      <summary>更多设置</summary>
+      <div class="advanced">
+        <div class="field"><label for="archiveDir">复制归档目录</label><input id="archiveDir" list="folderOptions" placeholder="可不填"></div>
+        <div class="field"><label for="company">本公司名称或别名</label><input id="company" placeholder="多个名称用分号隔开"><div class="hint">用于识别购买方；工商查询尚未接入</div></div>
+        <div class="field"><label for="ocrSel">图片与扫描 PDF</label><select id="ocrSel"><option value="1">使用 AI OCR</option><option value="0">不使用 OCR</option></select><div class="hint">开启后图片会发送至已配置的智谱服务</div></div>
+      </div>
+    </details>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  </section>
+
+  <section id="summary" class="card summary" aria-label="扫描结果"></section>
+  <section id="results" class="card results">
+    <div class="toolbar">
+      <div class="tabs" id="tabs"><button type="button" data-filter="new" class="on">待处理</button><button type="button" data-filter="reused">疑似复用</button><button type="button" data-filter="all">全部</button></div>
+      <input id="search" class="search" aria-label="搜索发票" placeholder="搜索文件、销方、号码或分类">
+      <span class="spacer"></span><button class="secondary" type="button" onclick="exportCsv()">导出</button><button class="secondary" type="button" onclick="markSelected(true)">标记已使用</button><button class="secondary" type="button" onclick="extractSelected()">复制归档</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th><input id="checkAll" type="checkbox" aria-label="全选"></th><th>发票</th><th>金额</th><th>日期</th><th>销售方</th><th>一级分类</th><th>状态</th><th>查重结果</th></tr></thead><tbody id="tbody"></tbody></table></div>
+    <div id="foot" class="foot"></div>
+  </section>
+</main>
+
+<dialog id="categoryDialog">
+  <div class="dialog-head"><strong>维护分类与二级关键词</strong><button class="ghost" type="button" onclick="$('#categoryDialog').close()">关闭</button></div>
+  <div class="dialog-body"><p class="dialog-note">票面命中二级关键词后，自动归入对应一级分类；更具体的词优先。</p><div class="cat-cols"><span>一级分类</span><span>二级关键词（顿号分隔）</span><span></span></div><div id="categoryRows"></div><button class="secondary" type="button" onclick="addCategory()">新增一级分类</button></div>
+  <div class="dialog-foot"><button class="ghost" type="button" onclick="$('#categoryDialog').close()">取消</button><button class="primary" type="button" onclick="saveCategories()">保存分类</button></div>
+</dialog>
+
+<script>
+const $=s=>document.querySelector(s),esc=s=>(s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state={records:[],catalog:[],categories:{},filter:'new',query:'',config:{}};
+const splitDirs=v=>v.split(';').map(s=>s.trim()).filter(Boolean);
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.headers.get('content-type')?.includes('json')?r.json():r.text()}
+function message(text,kind='info'){const el=$('#notice');el.className='notice '+kind;el.textContent=text}function clearMessage(){$('#notice').className='notice';$('#notice').textContent=''}
+async function init(){const[cfg,folders,cats]=await Promise.all([api('/api/config'),api('/api/folders'),api('/api/categories')]);state.config=cfg;state.catalog=cats;$('#watchDir').value=(cfg.watch_dirs||[]).join(';');$('#usedDirs').value=(cfg.used_dirs||[]).join(';');$('#archiveDir').value=cfg.archive_dir||'';$('#company').value=(cfg.company_names||[]).join(';');$('#ocrSel').value=cfg.ocr_enabled===false?'0':'1';$('#folderOptions').innerHTML=(folders.folders||[]).map(x=>`<option value="${esc(x)}">`).join('')}
+async function doScan(announce=true){const body={watch_dirs:splitDirs($('#watchDir').value),used_dirs:splitDirs($('#usedDirs').value),archive_dir:$('#archiveDir').value.trim(),company_names:splitDirs($('#company').value),ocr_enabled:$('#ocrSel').value==='1',ocr_model:'glm-4v-flash'};if(!body.watch_dirs.length){message('请先填写待查发票文件夹。','red');return}const btn=$('#scanBtn');btn.disabled=true;btn.textContent='正在读取…';clearMessage();try{const data=await api('/api/scan',body);state.records=data.records;state.categories=data.categories;state.config=data.config;render(data.stats);if(announce)message(data.stats.reused?`发现 ${data.stats.reused} 张新发票疑似已使用，请优先核对。`:'扫描完成，未发现新票复用。',data.stats.reused?'red':'info')}catch(e){message('扫描失败：'+e.message,'red')}finally{btn.disabled=false;btn.textContent='开始查重'}}
+function render(stats){$('#summary').className='card summary show';$('#results').className='card results show';$('#summary').innerHTML=`<div class="metric"><b>${stats.total}</b><span>张发票</span></div><div class="metric risk"><b>${stats.reused}</b><span>张新票疑似复用</span></div><div class="metric"><b>${stats.amount_ok}/${stats.total}</b><span>金额已识别</span></div><div class="metric"><b>${stats.warn}</b><span>张需人工关注</span></div>`;renderTable()}
+function visible(){const q=state.query.toLowerCase();return state.records.filter(r=>{if(state.filter==='new'&&r.is_used)return false;if(state.filter==='reused'&&(r.is_used||!r.dups.some(d=>d.is_used)))return false;return !q||[r.fname,r.seller,r.no,r.cat_label,r.date].join(' ').toLowerCase().includes(q)})}
+function catOptions(r){return state.catalog.map(c=>`<option value="${esc(c.id)}" ${r.cat_id===c.id?'selected':''}>${esc(c.label)}</option>`).join('')}
+function renderTable(){const rows=visible();$('#tbody').innerHTML=rows.map(r=>{const reused=!r.is_used&&r.dups?.some(d=>d.is_used),path=esc(JSON.stringify(r.path));const dups=(r.dups||[]).map(d=>`<div class="dup">${esc(d.basis)} · ${d.is_used?'已使用：':'关联：'}${esc(d.folder+'/'+d.fname)}</div>`).join('');return `<tr class="${reused?'risk':''}"><td><input class="rowCheck" type="checkbox" data-path="${esc(r.path)}" aria-label="选择 ${esc(r.fname)}"></td><td><strong>${esc(r.fname)}</strong>${r.warn?`<div class="warn">${esc(r.warn)}</div>`:''}<div class="muted">${esc(r.no||'号码未识别')}</div></td><td class="amount">${r.amount_cents==null?'-':'¥'+(r.amount_cents/100).toFixed(2)}</td><td>${esc(r.date||'-')}</td><td>${esc(r.seller||'-')}</td><td><div class="row-actions"><select aria-label="一级分类" onchange="setCategory(${path},this.value)">${catOptions(r)}</select></div><div class="subcat">二级：${esc(r.cat_rule||'未匹配')}</div></td><td><button class="badge ${r.is_used?'used':''}" type="button" onclick="setUsed(${path},${!r.is_used})">${r.is_used?'已使用':'待使用'}</button></td><td>${dups||'<span class="muted">未发现</span>'}</td></tr>`}).join('')||'<tr><td colspan="8" class="empty">没有符合当前条件的发票</td></tr>';$('#foot').textContent=`当前显示 ${rows.length} 张，合计 ¥${(rows.reduce((n,r)=>n+(r.amount_cents||0),0)/100).toFixed(2)}`}
+async function setCategory(path,id){await api('/api/override',{path,cat_id:id});const r=state.records.find(x=>x.path===path),c=state.catalog.find(x=>x.id===id);if(r&&c){r.cat_id=id;r.cat_label=c.label;r.cat_rule='人工'}renderTable()}
+async function setUsed(path,used){await api('/api/override',{path,used});const r=state.records.find(x=>x.path===path);if(r)r.is_used=used;renderTable()}
+function selected(){return [...document.querySelectorAll('.rowCheck:checked')].map(x=>x.dataset.path)}
+async function markSelected(used){const paths=selected();if(!paths.length)return message('请先选择发票。','red');for(const path of paths)await api('/api/override',{path,used});state.records.forEach(r=>{if(paths.includes(r.path))r.is_used=used});renderTable();message(`已更新 ${paths.length} 张发票。`)}
+async function extractSelected(){const paths=selected(),target=$('#archiveDir').value.trim();if(!paths.length)return message('请先选择发票。','red');if(!target)return message('请在“更多设置”中填写归档目录。','red');const d=await api('/api/extract',{paths,target_dir:target});message(`已复制 ${d.copied.length} 个，跳过 ${d.skipped.length} 个同名文件。`)}
+function exportCsv(){const scope=state.filter==='all'?'all':state.filter==='reused'?'reused':'new';const a=document.createElement('a');a.href='/api/export.csv?scope='+scope;a.download='发票台账_'+scope+'.csv';a.click()}
+function categoryRow(c){return `<div class="cat-row" data-id="${esc(c.id)}"><input class="cat-label" aria-label="一级分类" value="${esc(c.label)}"><input class="cat-keywords" aria-label="二级关键词" value="${esc((c.keywords||[]).join('、'))}" placeholder="二级项用顿号分隔"><button class="danger" type="button" ${c.id==='other'?'disabled':''} onclick="this.parentElement.remove()">删除</button></div>`}function openCategories(){renderCategoryRows();$('#categoryDialog').showModal()}function renderCategoryRows(){$('#categoryRows').innerHTML=state.catalog.map(categoryRow).join('')}
+function addCategory(){$('#categoryRows').insertAdjacentHTML('beforeend',categoryRow({id:'custom_'+Date.now().toString(36),label:'新分类',note:'',keywords:[]}))}
+async function saveCategories(){const categories=[...document.querySelectorAll('.cat-row')].map(row=>{const keywords=row.querySelector('.cat-keywords').value.split(/[、,，;；]/).map(x=>x.trim()).filter(Boolean);return{id:row.dataset.id,label:row.querySelector('.cat-label').value.trim(),note:keywords.join('、'),keywords}});try{const d=await api('/api/categories',{categories});state.catalog=d.categories;$('#categoryDialog').close();message('分类已保存；扫描结果会按新二级关键词刷新。');if(state.records.length)await doScan(false)}catch(e){message('分类保存失败：'+e.message,'red')}}
+$('#tabs').addEventListener('click',e=>{if(!e.target.dataset.filter)return;state.filter=e.target.dataset.filter;document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===e.target));renderTable()});$('#search').addEventListener('input',e=>{state.query=e.target.value;renderTable()});$('#checkAll').addEventListener('change',e=>document.querySelectorAll('.rowCheck').forEach(x=>x.checked=e.target.checked));init().catch(e=>message('初始化失败：'+e.message,'red'));
+</script>
+</body>
+</html>
