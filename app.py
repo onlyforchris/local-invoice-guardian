@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 import webbrowser
 from decimal import Decimal
@@ -51,8 +52,8 @@ except Exception:
 LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
-ENGINE_VER = 5  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.2"
+ENGINE_VER = 6  # 引擎版本；升级后旧台账自动失效重解析
+APP_VERSION = "1.1.3"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -87,7 +88,7 @@ RULES = [
     ("service", ["技术服务费", "招聘费", "软件服务", "云服务", "咨询服务"]),
     ("rd", ["专利", "软著", "软件著作权", "研发设备", "认证检测", "认证费", "检测费"]),
     ("property", ["房屋租赁", "租赁费", "物业", "水费", "电费", "水电"]),
-    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "外卖", "咖啡", "奶茶", "零食", "食品"]),
+    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "餐费", "外卖", "咖啡", "奶茶", "零食", "食品"]),
 ]
 
 DEFAULT_CATEGORIES = [
@@ -160,10 +161,16 @@ def norm_date(raw):
 # ---------- 从正文提取字段（PDF 文本与 OCR 文本共用）----------
 def _companies(text):
     out = []
-    for c in COMPANY_RE.findall(text or ""):
-        c = c.strip()
-        c = re.sub(r"^[\s:：]+", "", c)
-        if len(re.findall(r"[\u4e00-\u9fa5]", c)) >= 2 and c not in out:
+    candidates = COMPANY_RE.findall(text or "")
+    candidates += re.findall(r"名称[:：]\s*([^\n]{2,60})", text or "")
+    taxes = list(re.finditer(r"(?<![0-9A-Z])[0-9A-Z]{15,20}(?![0-9A-Z])", text or ""))
+    candidates += [(text or "")[a.end():b.start()] for a, b in zip(taxes, taxes[1:])]
+    for c in candidates:
+        c = re.sub(r"\s+", "", c).strip(":：")
+        if (4 <= len(re.findall(r"[\u4e00-\u9fa5]", c)) <= 40
+                and not re.search(r"发票|统一社会信用|纳税人识别号|项目名称", c)
+                and not norm_date(c)
+                and c not in out):
             out.append(c)
     return out
 
@@ -171,7 +178,8 @@ def _companies(text):
 def extract_fields(text, fname="", company_names=None):
     """返回字段 dict。金额以「价税合计（小写）」为准。"""
     # 一些通行费 PDF 会在每个字符前插入 NUL；先清理再做结构化匹配。
-    t = (text or "").replace("\x00", "")
+    t = unicodedata.normalize("NFKC", (text or "").replace("\x00", "")).translate(
+        str.maketrans({"⻔": "门", "⻝": "食"}))
     t2 = re.sub(r"(\d),(?=\d{3})", r"\1", t)
     f = {"no": None, "code": None, "date": None, "amount_cents": None,
          "seller": None, "buyer": None, "kind": "其他", "items": []}
