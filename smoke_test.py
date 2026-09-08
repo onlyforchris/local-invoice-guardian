@@ -37,3 +37,7 @@ print("POST /api/scan   ->", s, "| total:", st["total"], "pairs:", st["dup_pairs
 s, csv = call("/api/export.csv?scope=dup")
 txt = csv.decode("utf-8-sig")
 print("GET /api/export.csv(dup) ->", s, "| 行数:", txt.count(chr(10)), "| 表头含'费用分类':", "费用分类" in txt)
+# 5) 导出 xlsx 分类汇总
+s, xlsx = call("/api/export.xlsx?scope=all")
+print("GET /api/export.xlsx(all) ->", s, "| bytes:", len(xlsx), "| zip魔数:", xlsx[:2] == b"PK")
+assert xlsx[:2] == b"PK", "xlsx 应为 zip 容器"

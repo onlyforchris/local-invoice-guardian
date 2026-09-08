@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """核心查重与分类的最小回归检查。"""
+import io
+
 import app
 
 
@@ -42,6 +44,40 @@ def main():
     fields = app.extract_fields(compact, company_names=["上海亿流科技有限公司"])
     assert fields["seller"] == "上海金拱门食品有限公司"
     assert app.validate_categories(app.DEFAULT_CATEGORIES)
+
+    # xlsx 分类汇总导出
+    from openpyxl import load_workbook
+    recs = [
+        {"path": "a", "fname": "a.pdf", "folder": "F", "amount_cents": 1470,
+         "date": "2026-08-02", "cat_label": "交通费", "seller": "s1",
+         "is_used": False, "dups": []},
+        {"path": "b", "fname": "b.pdf", "folder": "F", "amount_cents": 200,
+         "date": "2026-08-01", "cat_label": "交通费", "seller": "s2",
+         "is_used": False, "dups": []},
+        {"path": "c", "fname": "c.pdf", "folder": "F", "amount_cents": 77700,
+         "date": "2026-08-03", "cat_label": "差旅费", "seller": "s3",
+         "is_used": True, "dups": []},
+        {"path": "d", "fname": "d.pdf", "folder": "F", "amount_cents": None,
+         "date": None, "cat_label": "交通费", "seller": "s4",
+         "is_used": False, "dups": []},
+    ]
+    buf = app.export_xlsx(recs)
+    wb = load_workbook(filename=io.BytesIO(buf))
+    ws = wb["分类汇总"]
+    assert ws.cell(1, 1).value == "差旅费", "列顺序须按分类目录（差旅费在交通费前）"
+    assert ws.cell(1, 2).value == "交通费"
+    assert ws.cell(2, 2).value == 2, "金额按日期升序：0.8-1 的 2 元在前"
+    assert ws.cell(3, 2).value == 14.7
+    assert ws.cell(2, 1).value == 777
+    assert ws.cell(5, 1).value == "=SUM(A2:A3)", "合计行统一覆盖数据区（空单元格按0计）"
+    assert ws.cell(5, 2).value == "=SUM(B2:B3)"
+    assert ws.cell(1, 3).value == "总计"
+    ws2 = wb["明细"]
+    assert ws2.cell(2, 4).value == "s2"
+    assert app.record_in_scope({"is_used": False, "dups": [{"is_used": True}]}, "reused")
+    assert not app.record_in_scope({"is_used": True, "dups": [{"is_used": True}]}, "reused")
+    assert app.record_in_scope({"is_used": False, "dups": []}, "new")
+    assert not app.record_in_scope({"is_used": False, "dups": []}, "dup")
     print("core checks: ok")
 
 

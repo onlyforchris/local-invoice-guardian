@@ -462,6 +462,19 @@ def records_in_dirs(led, dirs):
             if any(is_within(r["path"], d) for d in dirs)]
 
 
+def collect_records():
+    """当前配置目录下的全部台账记录，并按配置标注 is_used。"""
+    cfg = load_config()
+    led = load_ledger()
+    used_set = {os.path.normpath(d) for d in cfg.get("used_dirs", []) if d and os.path.isdir(d)}
+    dirs = list(cfg.get("watch_dirs", [])) + list(cfg.get("used_dirs", []))
+    recs = records_in_dirs(led, dirs)
+    for r in recs:
+        folder_used = any(is_within(r["path"], d) for d in used_set)
+        r["is_used"] = bool(r.get("used_override")) if r.get("used_override_set") else folder_used
+    return recs
+
+
 def validate_categories(raw):
     if not isinstance(raw, list) or not 1 <= len(raw) <= 50:
         raise ValueError("分类数量应为 1-50 个")
@@ -633,6 +646,90 @@ def export_csv(recs, scope):
     return "\ufeff" + "\n".join(lines)
 
 
+def record_in_scope(r, scope):
+    if scope == "used":
+        return r["is_used"]
+    if scope == "new":
+        return not r["is_used"]
+    if scope == "dup":
+        return bool(r.get("dups"))
+    if scope == "reused":
+        return (not r["is_used"]) and any(d.get("is_used") for d in (r.get("dups") or []))
+    return True
+
+
+def build_summary_workbook(recs):
+    """分类汇总表：分类做列、金额按开票日期竖排、底部合计行，另附明细页。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    ordered = [c["label"] for c in get_categories()]
+    groups = {}
+    for r in recs:
+        cents = r.get("amount_cents")
+        if not cents:
+            continue
+        lbl = r.get("cat_label") or "其他/待分类"
+        if lbl not in ordered:
+            ordered.append(lbl)
+        groups.setdefault(lbl, []).append((r.get("date") or "", cents))
+    cols = [lbl for lbl in ordered if groups.get(lbl)]
+    for lst in groups.values():
+        lst.sort(key=lambda x: (x[0] or "9999-99-99", x[1]))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "分类汇总"
+    bold = Font(bold=True)
+    n_rows = max((len(v) for v in groups.values()), default=0)
+    for j, lbl in enumerate(cols, 1):
+        col = get_column_letter(j)
+        head = ws.cell(row=1, column=j, value=lbl)
+        head.font = bold
+        ws.column_dimensions[col].width = max(12, len(lbl) * 2 + 4)
+        for i, (_d, cents) in enumerate(groups[lbl], 2):
+            cell = ws.cell(row=i, column=j, value=cents / 100)
+            cell.number_format = "0.00"
+        sum_row = n_rows + 3
+        total = ws.cell(row=sum_row, column=j, value="=SUM(%s2:%s%d)" % (col, col, n_rows + 1))
+        total.font = bold
+        total.number_format = "0.00"
+    if cols:
+        last = len(cols) + 1
+        head = ws.cell(row=1, column=last, value="总计")
+        head.font = bold
+        grand = ws.cell(row=n_rows + 3, column=last,
+                        value="=SUM(A%d:%s%d)" % (n_rows + 3, get_column_letter(len(cols)), n_rows + 3))
+        grand.font = bold
+        grand.number_format = "0.00"
+        ws.column_dimensions[get_column_letter(last)].width = 14
+
+    ws2 = wb.create_sheet("明细")
+    head = ["开票日期", "金额(元)", "费用分类", "销售方", "文件名", "所在文件夹", "状态"]
+    for j, h in enumerate(head, 1):
+        cell = ws2.cell(row=1, column=j, value=h)
+        cell.font = bold
+    for i, r in enumerate(sorted(recs, key=lambda x: (x.get("date") or "9999-99-99", x.get("fname") or "")), 2):
+        vals = [r.get("date") or "", (r.get("amount_cents") or 0) / 100,
+                r.get("cat_label") or "", r.get("seller") or "", r.get("fname") or "",
+                r.get("folder") or "", "已使用" if r["is_used"] else "待使用"]
+        for j, v in enumerate(vals, 1):
+            cell = ws2.cell(row=i, column=j, value=v)
+            if j == 2:
+                cell.number_format = "0.00"
+    for j, w in enumerate((12, 11, 13, 32, 36, 20, 9), 1):
+        ws2.column_dimensions[get_column_letter(j)].width = w
+    return wb
+
+
+def export_xlsx(recs):
+    from io import BytesIO
+    buf = BytesIO()
+    build_summary_workbook(recs).save(buf)
+    return buf.getvalue()
+
+
 # ---------- HTTP ----------
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -679,15 +776,28 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/export.csv":
             q = parse_qs(u.query)
             scope = (q.get("scope") or ["all"])[0]
-            cfg = load_config()
-            led = load_ledger()
-            used_set = {os.path.normpath(d) for d in cfg.get("used_dirs", []) if d and os.path.isdir(d)}
-            dirs = list(cfg.get("watch_dirs", [])) + list(cfg.get("used_dirs", []))
-            recs = records_in_dirs(led, dirs)
-            for r in recs:
-                folder_used = any(is_within(r["path"], d) for d in used_set)
-                r["is_used"] = bool(r.get("used_override")) if r.get("used_override_set") else folder_used
-            return self._send(200, export_csv(recs, scope), "text/csv; charset=utf-8")
+            return self._send(200, export_csv(collect_records(), scope), "text/csv; charset=utf-8")
+        if u.path == "/api/export.xlsx":
+            from urllib.parse import quote
+            q = parse_qs(u.query)
+            scope = (q.get("scope") or ["all"])[0]
+            recs = [r for r in collect_records() if record_in_scope(r, scope)]
+            try:
+                data = export_xlsx(recs)
+            except ImportError:
+                return self._send(500, json.dumps(
+                    {"error": "缺少 openpyxl 组件，请先执行: pip install openpyxl"}, ensure_ascii=False))
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="invoice_summary.xlsx"; filename*=UTF-8\'\''
+                + quote("发票分类汇总.xlsx"))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         self._send(404, "{}")
 
     def do_POST(self):

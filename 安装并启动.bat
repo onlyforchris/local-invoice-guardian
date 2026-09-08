@@ -53,7 +53,11 @@ if errorlevel 1 goto venvfail
 echo.
 echo [3/4] 检查并安装依赖（优先清华镜像，失败回退官方源）...
 %PYEXE% -m pip show pypdf >nul 2>nul
-if not errorlevel 1 goto already
+if errorlevel 1 goto installdeps
+%PYEXE% -m pip show openpyxl >nul 2>nul
+if errorlevel 1 goto installdeps
+goto already
+:installdeps
 %PYEXE% -m pip install %PIPARGS% -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto start
 echo       清华镜像安装失败，改用官方源重试 ...
