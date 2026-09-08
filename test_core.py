@@ -27,6 +27,7 @@ def main():
     assert fields["no"] == "26317907150900072033"
     assert fields["date"] == "2026-09-07"
     assert fields["amount_cents"] == 196
+    assert app.extract_fields("价税合计（大写）：壹佰圆肆角伍分 （小写）：100.45")["amount_cents"] == 10045
     party = app.extract_fields(
         "名称: 上海亿流科技有限公司\n统一社会信用代码: 9131011259474644XJ\n"
         "名称: 杭州市西湖区国娣餐饮店\n统一社会信用代码: 92330106MA2GKHP698",
