@@ -12,9 +12,9 @@ Windows 本地发票内容查重与费用分类工具。支持 PDF、JPG、PNG �
 
 ## 快速开始
 
-1. 安装 [Python 3](https://www.python.org/downloads/windows/)，并勾选 `Add Python to PATH`。
+1. （可跳过）未装 Python 时脚本会用 winget 自动安装；也可手动安装并勾选 `Add Python to PATH`。
 2. 从 [Releases](https://github.com/onlyforchris/local-invoice-guardian/releases) 下载源码并解压。
-3. 双击 `安装并启动.bat`；以后可双击 `启动发票管家.bat`。
+3. 双击 `安装并启动.bat`：自动创建 `.venv`、优先用国内镜像装依赖，完成后自动启动；以后可双击 `启动发票管家.bat`。
 
 程序只监听本机 `127.0.0.1:8765`。详细目录含义、分类维护、智谱 API Key 配置和常见问题见[使用说明](docs/使用说明.md)。
 
