@@ -836,7 +836,22 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/config":
             cfg = load_config()
             cfg["ocr_key_configured"] = bool(zhipu_key())
+            cfg["app_version"] = APP_VERSION
             return self._send(200, json.dumps(cfg))
+        if u.path == "/api/subdirs":
+            # 列出所选目录的直接子目录，供「添加目录」多选勾选
+            q = parse_qs(u.query)
+            base = (q.get("path") or [""])[0]
+            found = []
+            if base and os.path.isdir(base):
+                try:
+                    for name in sorted(os.listdir(base)):
+                        full = os.path.normpath(os.path.join(base, name))
+                        if os.path.isdir(full):
+                            found.append(full)
+                except OSError:
+                    pass
+            return self._send(200, json.dumps({"base": base, "dirs": found[:200]}, ensure_ascii=False))
         if u.path == "/api/categories":
             return self._send(200, json.dumps(get_categories(), ensure_ascii=False))
         if u.path == "/api/folders":
