@@ -849,6 +849,29 @@ class Handler(BaseHTTPRequestHandler):
                                                 or "报销" in d or "归档" in d):
                         found.append(full)
             return self._send(200, json.dumps({"desktop": desk, "folders": found}))
+        if u.path == "/api/file":
+            # 发票原文件预览：仅允许已配置目录内的发票文件，防止任意路径读取
+            q = parse_qs(u.query)
+            path = (q.get("path") or [""])[0]
+            cfg = load_config()
+            dirs = [d for d in list(cfg.get("watch_dirs", [])) + list(cfg.get("used_dirs", [])) if d]
+            ext = os.path.splitext(path)[1].lower()
+            if not path or ext not in INVOICE_EXTS or not os.path.isfile(path) \
+                    or not any(is_within(path, d) for d in dirs):
+                return self._send(404, json.dumps(
+                    {"error": "发票文件不存在或不在已配置目录中"}, ensure_ascii=False))
+            ctype = "application/pdf" if ext == ".pdf" else {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".bmp": "image/bmp", ".webp": "image/webp"}.get(ext, "application/octet-stream")
+            with open(path, "rb") as fh:
+                data = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if u.path == "/api/export.csv":
             q = parse_qs(u.query)
             scope = (q.get("scope") or ["all"])[0]
