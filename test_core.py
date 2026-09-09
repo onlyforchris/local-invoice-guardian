@@ -3,6 +3,7 @@
 import io
 
 import app
+import update
 
 
 def keys(fields, md5="same"):
@@ -24,6 +25,11 @@ def main():
     assert app.classify_text("生产生活服务餐费")[0] == "benefit"
     assert app.classify_text("项目名称：休闲零食食品")[0] == "benefit"
     assert app.classify_text("项目名称：宴请礼品")[0] == "hospitality"
+    assert app.classify_text("顺丰收派服务")[0] == "office"
+    assert app.classify_text("网约车客运服务费")[0] == "transport"
+    assert app.classify_text("92号车用乙醇")[0] == "transport"
+    assert app.classify_text("人工智能技术服务")[0] == "service"
+    assert app.classify_text("熟肉制品酱板鸭")[0] == "benefit"
     broken = "发票号码：\x002\x006\x003\x001\x007\x009\x000\x007\x001\x005\x000\x009\x000\x000\x000\x007\x002\x000\x003\x003\n2026^t09g\b07\n价税合计（小写）\x00¥\x001\x00.\x009\x006"
     fields = app.extract_fields(broken)
     assert fields["no"] == "26317907150900072033"
@@ -44,6 +50,7 @@ def main():
     fields = app.extract_fields(compact, company_names=["上海亿流科技有限公司"])
     assert fields["seller"] == "上海金拱门食品有限公司"
     assert app.validate_categories(app.DEFAULT_CATEGORIES)
+    assert update.version_key("v1.1.10") > update.version_key("1.1.9")
 
     # xlsx 分类汇总导出
     from openpyxl import load_workbook
@@ -76,7 +83,8 @@ def main():
     assert ws2.cell(2, 4).value == "s2"
     assert app.record_in_scope({"is_used": False, "dups": [{"is_used": True}]}, "reused")
     assert not app.record_in_scope({"is_used": True, "dups": [{"is_used": True}]}, "reused")
-    assert app.record_in_scope({"is_used": False, "dups": []}, "new")
+    assert app.record_in_scope({"is_used": True, "in_watch": True, "dups": []}, "new")
+    assert not app.record_in_scope({"is_used": False, "in_watch": False, "dups": []}, "new")
     assert not app.record_in_scope({"is_used": False, "dups": []}, "dup")
     print("core checks: ok")
 

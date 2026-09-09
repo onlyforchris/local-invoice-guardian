@@ -53,7 +53,7 @@ LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
 ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -77,18 +77,18 @@ CAT_IDS = [c["id"] for c in CATALOG]
 
 # 分类关键词规则（有序，先命中更具体；文本=文件名+销方+品名+正文片段）
 RULES = [
-    ("office", ["办公用品", "打印纸", "快递", "饮用水", "绿植", "文具", "耗材", "硒鼓", "墨盒", "a4纸"]),
+    ("office", ["办公用品", "打印纸", "快递", "收派服务", "物流网络", "饮用水", "绿植", "文具", "耗材", "硒鼓", "墨盒", "a4纸"]),
     ("travel", ["机票", "火车票", "住宿", "打车", "订票手续费", "行程单", "高铁", "动车", "酒店", "宾馆"]),
-    ("transport", ["网约车", "加油", "停车", "过路", "租车", "滴滴", "出租车", "通行费", "代驾"]),
+    ("transport", ["网约车", "客运服务费", "加油", "车用乙醇", "汽油", "柴油", "停车", "过路", "租车", "滴滴", "出租车", "通行费", "代驾"]),
     ("communication", ["办公电话", "宽带", "通信服务", "中国移动", "中国联通", "中国电信", "话费"]),
     ("hospitality", ["餐饮招待", "宴请", "茶叶", "礼品"]),
     ("meeting", ["会议场地", "会议资料", "会议费"]),
     ("training", ["培训", "报名费", "课程", "训练营", "考试费"]),
     ("advertising", ["广告服务费", "制作费", "推广费", "广告宣传"]),
-    ("service", ["技术服务费", "招聘费", "软件服务", "云服务", "咨询服务"]),
+    ("service", ["技术服务费", "技术服务", "招聘费", "软件服务", "云服务", "咨询服务"]),
     ("rd", ["专利", "软著", "软件著作权", "研发设备", "认证检测", "认证费", "检测费"]),
     ("property", ["房屋租赁", "租赁费", "物业", "水费", "电费", "水电"]),
-    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "餐费", "外卖", "咖啡", "奶茶", "零食", "食品"]),
+    ("benefit", ["团建", "下午茶", "员工餐", "餐饮", "餐费", "外卖", "咖啡", "奶茶", "零食", "食品", "熟肉制品", "酱板鸭", "水果", "牛奶", "乳制品", "纯奶"]),
 ]
 
 DEFAULT_CATEGORIES = [
@@ -495,11 +495,13 @@ def collect_records():
     """当前配置目录下的全部台账记录，并按配置标注 is_used。"""
     cfg = load_config()
     led = load_ledger()
+    watch_dirs = list(cfg.get("watch_dirs", []))
     used_set = {os.path.normpath(d) for d in cfg.get("used_dirs", []) if d and os.path.isdir(d)}
-    dirs = list(cfg.get("watch_dirs", [])) + list(cfg.get("used_dirs", []))
+    dirs = watch_dirs + list(cfg.get("used_dirs", []))
     recs = records_in_dirs(led, dirs)
     for r in recs:
         folder_used = any(is_within(r["path"], d) for d in used_set)
+        r["in_watch"] = any(is_within(r["path"], d) for d in watch_dirs)
         r["is_used"] = bool(r.get("used_override")) if r.get("used_override_set") else folder_used
     return recs
 
@@ -679,7 +681,7 @@ def export_csv(recs, scope):
         if (scope == "used" and not r["is_used"]) or \
            (scope == "dup" and not r["dups"]) or \
            (scope == "reused" and (r["is_used"] or not any(d.get("is_used") for d in r["dups"]))) or \
-           (scope == "new" and r["is_used"]):
+           (scope == "new" and not r.get("in_watch")):
             continue
         row = [r["fname"], r["folder"], (r["amount_cents"] or 0) / 100,
                r.get("date") or "", r.get("no") or "", r.get("code") or "",
@@ -693,7 +695,7 @@ def record_in_scope(r, scope):
     if scope == "used":
         return r["is_used"]
     if scope == "new":
-        return not r["is_used"]
+        return bool(r.get("in_watch"))
     if scope == "dup":
         return bool(r.get("dups"))
     if scope == "reused":

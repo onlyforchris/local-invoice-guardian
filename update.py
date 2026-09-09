@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""发票管家在线升级：下载 GitHub main 分支压缩包并覆盖更新。
+"""发票管家在线升级：下载 GitHub 最新 Release 源码包并覆盖更新。
 
-- 不走 GitHub API（免速率限制），直接下载分支 zip；
+- 默认跟随最新正式 Release，不安装 main 分支中的未发布代码；
 - 保护用户数据：config.json / invoice_ledger.json / python_path.txt / .venv 等绝不覆盖；
 - 用法：python update.py [--dry] [--yes] [--force] [--url 下载地址]
 """
@@ -11,10 +11,11 @@ import re
 import sys
 import urllib.request
 import zipfile
+from urllib.parse import quote, unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ZIP = os.environ.get("INVOICE_UPDATE_URL") or \
-    "https://github.com/onlyforchris/local-invoice-guardian/archive/refs/heads/main.zip"
+LATEST_RELEASE = "https://github.com/onlyforchris/local-invoice-guardian/releases/latest"
+TAG_ZIP = "https://github.com/onlyforchris/local-invoice-guardian/archive/refs/tags/%s.zip"
 PROTECT_FILES = {"config.json", "invoice_ledger.json", "python_path.txt"}
 PROTECT_DIRS = {".venv", "__pycache__", ".git"}
 VERSION_RE = re.compile(r'APP_VERSION\s*=\s*"([^"]+)"')
@@ -25,10 +26,24 @@ def read_version(text):
     return m.group(1) if m else "?"
 
 
+def version_key(value):
+    return tuple(int(x) for x in re.findall(r"\d+", value or ""))
+
+
 def fetch(url, timeout=180):
     req = urllib.request.Request(url, headers={"User-Agent": "invoice-manager-updater"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
+
+
+def latest_tag(timeout=60):
+    req = urllib.request.Request(LATEST_RELEASE, headers={"User-Agent": "invoice-manager-updater"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        final_url = r.geturl()
+    m = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not m:
+        raise RuntimeError("无法确定 GitHub 最新正式版本")
+    return unquote(m.group(1))
 
 
 def collect(zf):
@@ -58,13 +73,26 @@ def collect(zf):
 def main():
     args = sys.argv[1:]
     dry = "--dry" in args
+    override = os.environ.get("INVOICE_UPDATE_URL")
+    if "--url" in args:
+        i = args.index("--url")
+        if i + 1 >= len(args):
+            print("[失败] --url 后需要填写下载地址。")
+            return 1
+        override = args[i + 1]
     local_path = os.path.join(HERE, "app.py")
     with open(local_path, encoding="utf-8") as f:
         local_ver = read_version(f.read())
     print("本地版本:", local_ver)
-    print("正在下载最新代码（GitHub main 分支）…")
     try:
-        data = fetch(REPO_ZIP)
+        if override:
+            url = override
+            print("正在下载指定升级包…")
+        else:
+            tag = latest_tag()
+            url = TAG_ZIP % quote(tag, safe="")
+            print("正在下载 GitHub 最新正式版:", tag)
+        data = fetch(url)
     except Exception as e:
         print("[失败] 下载出错:", e)
         print("国内网络直连 GitHub 可能不稳定，可设置代理后重试：")
@@ -78,6 +106,9 @@ def main():
         return 0
     if new_ver == local_ver and "--force" not in args:
         print("本地已是最新版本，无需升级。")
+        return 0
+    if version_key(new_ver) < version_key(local_ver) and "--force" not in args:
+        print("本地版本更新，不执行降级。")
         return 0
     if "--yes" not in args:
         try:

@@ -17,8 +17,13 @@ set "PYEXE=python"
 :run
 %PYEXE% update.py %1 %2
 if errorlevel 1 goto fail
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
-timeout /t 1 >nul
+echo 正在检查升级后的依赖...
+%PYEXE% -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+if errorlevel 1 %PYEXE% -m pip install -r requirements.txt
+if errorlevel 1 goto fail
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_server.ps1"
+if errorlevel 1 goto portbusy
+ping -n 2 127.0.0.1 >nul
 start "" %PYEXE% app.py
 echo.
 echo 升级完成，发票管家已重启，浏览器将自动打开。
@@ -30,5 +35,11 @@ echo 升级未完成。若提示网络问题，可先设置代理再重试：
 echo   1. 打开 cmd 执行:  set HTTPS_PROXY=http://127.0.0.1:7890  （端口按实际填）
 echo   2. 在同一个 cmd 窗口里重新运行本升级脚本
 echo.
+pause
+exit /b 1
+
+:portbusy
+echo.
+echo 代码已更新，但端口 8765 被其他程序占用，未结束该程序。请关闭占用程序后双击“启动发票管家.bat”。
 pause
 exit /b 1

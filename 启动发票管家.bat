@@ -1,9 +1,10 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-rem kill previous server listening on port 8765
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
-timeout /t 1 >nul
+rem only stop a confirmed Invoice Manager; never kill an unrelated service on 8765
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_server.ps1"
+if errorlevel 1 goto portbusy
+ping -n 2 127.0.0.1 >nul
 if exist ".venv\Scripts\python.exe" goto venv
 if not exist "python_path.txt" goto chain
 set /p PYCMD=<python_path.txt
@@ -33,3 +34,8 @@ exit /b 0
 :py312
 start "" "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" app.py
 exit /b 0
+
+:portbusy
+echo [失败] 端口 8765 已被其他程序占用，未结束该程序。请先关闭占用程序后重试。
+pause
+exit /b 1

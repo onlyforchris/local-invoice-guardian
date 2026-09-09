@@ -70,15 +70,16 @@ echo       依赖已安装过，跳过安装。
 
 :start
 >python_path.txt echo %PYEXE%
-rem kill previous server listening on port 8765
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
-timeout /t 1 >nul
+rem only stop a confirmed Invoice Manager; never kill an unrelated service on 8765
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_server.ps1"
+if errorlevel 1 goto portbusy
+ping -n 2 127.0.0.1 >nul
 echo.
 echo [4/4] 启动发票管家 ...
 echo       服务地址 http://127.0.0.1:8765 ，浏览器将自动打开。
 start "" %PYEXE% app.py
 echo 完成！本窗口可以关闭，以后启动请双击 启动发票管家.bat。
-timeout /t 6 >nul
+ping -n 7 127.0.0.1 >nul
 exit /b 0
 
 :pipfail
@@ -92,6 +93,12 @@ echo        set HTTPS_PROXY=http://127.0.0.1:7890
 echo     2. 在同一个 cmd 窗口里重新运行本脚本。
 echo   如果不需要代理：请暂时关闭防火墙/安全软件，或换手机热点后再试。
 echo.
+pause
+exit /b 1
+
+:portbusy
+echo.
+echo [失败] 端口 8765 已被其他程序占用，未结束该程序。请先关闭占用程序后重试。
 pause
 exit /b 1
 
