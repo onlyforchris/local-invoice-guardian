@@ -17,7 +17,7 @@ def call(path, body=None):
 # 1) 首页
 s, html = call("/")
 print("GET /            ->", s, "html bytes:", len(html), "| 含标题:", "发票管家" in html.decode("utf-8", "ignore"))
-assert "本地 Python 识别" in html.decode("utf-8") and "智谱 API Key" in html.decode("utf-8")
+assert "仅本地识别" in html.decode("utf-8") and "保存并检测" in html.decode("utf-8")
 # 2) config / folders / categories
 s, cfg = call("/api/config")
 print("GET /api/config  ->", s, json.loads(cfg))
@@ -41,3 +41,9 @@ print("GET /api/export.csv(dup) ->", s, "| 行数:", txt.count(chr(10)), "| 表�
 s, xlsx = call("/api/export.xlsx?scope=all")
 print("GET /api/export.xlsx(all) ->", s, "| bytes:", len(xlsx), "| zip魔数:", xlsx[:2] == b"PK")
 assert xlsx[:2] == b"PK", "xlsx 应为 zip 容器"
+# 6) save-key 空值应被拒绝（400），不触碰已保存的真实 Key
+try:
+    call("/api/save-key", {"api_key": ""})
+    raise AssertionError("空 api_key 应返回 400")
+except urllib.error.HTTPError as e:
+    print("POST /api/save-key(empty) ->", e.code, "(符合预期)")

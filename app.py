@@ -54,7 +54,7 @@ LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
 ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -310,6 +310,51 @@ def zhipu_key():
         except OSError:
             continue
     return ""
+
+
+def mask_key(key):
+    """脱敏展示：只露头尾各 4 位。"""
+    key = (key or "").strip()
+    return key[:4] + "…" + key[-4:] if len(key) >= 10 else ""
+
+
+def save_zhipu_key(key):
+    """把 Key 写入 Windows 当前用户环境变量（等效于旧版 PowerShell 命令，但无需命令行）。
+
+    写注册表 HKCU\\Environment 后广播 WM_SETTINGCHANGE，之后新开的程序都能读到；
+    同时更新当前进程 os.environ，本服务立即生效，无需重启。
+    """
+    key = (key or "").strip()
+    if not key:
+        raise ValueError("API Key 不能为空")
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            winreg.SetValueEx(k, "ZHIPUAI_API_KEY", 0, winreg.REG_SZ, key)
+        try:  # 通知系统刷新环境变量，让之后新启动的程序立刻可见
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF, 0x001A, 0, "Environment", 0x0002, 1000,
+                ctypes.byref(ctypes.c_ulong()))
+        except Exception:
+            pass
+    except ImportError:  # 非 Windows（开发环境）：仅写入当前进程
+        pass
+    os.environ["ZHIPUAI_API_KEY"] = key
+
+
+def clear_zhipu_key():
+    """删除本机保存的 Key（注册表 + 当前进程）。"""
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            try:
+                winreg.DeleteValue(k, "ZHIPUAI_API_KEY")
+            except OSError:
+                pass
+    except ImportError:
+        pass
+    os.environ.pop("ZHIPUAI_API_KEY", None)
 
 
 def friendly_ocr_error(error):
@@ -836,6 +881,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/config":
             cfg = load_config()
             cfg["ocr_key_configured"] = bool(zhipu_key())
+            cfg["key_masked"] = mask_key(zhipu_key())
             cfg["app_version"] = APP_VERSION
             return self._send(200, json.dumps(cfg))
         if u.path == "/api/subdirs":
@@ -997,6 +1043,29 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "configured": True,
                     "message": friendly_ocr_error(e)}, ensure_ascii=False))
+        if u.path == "/api/save-key":
+            body = self._read_json()
+            if body.get("clear"):
+                clear_zhipu_key()
+                return self._send(200, json.dumps(
+                    {"ok": True, "configured": False, "masked": "",
+                     "message": "已清除本机保存的 API Key"}, ensure_ascii=False))
+            key = (body.get("api_key") or "").strip().strip('"').strip("'")
+            if len(key) < 10:
+                return self._send(400, json.dumps(
+                    {"error": "这串内容不像完整的 API Key（应是一长串字母数字），请回网页重新「复制」再粘贴"},
+                    ensure_ascii=False))
+            save_zhipu_key(key)
+            try:
+                zhipu_chat([{"role": "user", "content": "仅回复OK"}],
+                           "glm-4v-flash", timeout=20, max_tokens=2)
+                return self._send(200, json.dumps(
+                    {"ok": True, "configured": True, "masked": mask_key(key),
+                     "message": "连接正常，AI 识别已就绪"}, ensure_ascii=False))
+            except Exception as e:
+                return self._send(200, json.dumps(
+                    {"ok": False, "configured": True, "masked": mask_key(key),
+                     "message": friendly_ocr_error(e)}, ensure_ascii=False))
         if u.path == "/api/override":
             body = self._read_json()
             path = body.get("path")
