@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """核心查重与分类的最小回归检查。"""
 import io
+import urllib.error
 
 import app
 import update
@@ -51,6 +52,8 @@ def main():
     assert fields["seller"] == "上海金拱门食品有限公司"
     assert app.validate_categories(app.DEFAULT_CATEGORIES)
     assert update.version_key("v1.1.10") > update.version_key("1.1.9")
+    assert "无效" in app.friendly_ocr_error(urllib.error.HTTPError("", 401, "", {}, None))
+    assert "频率" in app.friendly_ocr_error(urllib.error.HTTPError("", 429, "", {}, None))
 
     # xlsx 分类汇总导出
     from openpyxl import load_workbook

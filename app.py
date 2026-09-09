@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 import webbrowser
 from decimal import Decimal
@@ -53,7 +54,7 @@ LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
 ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
 
@@ -311,14 +312,38 @@ def zhipu_key():
     return ""
 
 
-def ocr_b64(b64, mime, model="glm-4v-flash", timeout=60):
-    """把 base64 图片发到智谱视觉模型，返回识别出的纯文本。"""
+def friendly_ocr_error(error):
+    """把供应商错误转换为用户可执行的提示，不暴露响应正文。"""
+    code = getattr(error, "code", None)
+    if code in (401, 403):
+        return "API Key 无效、已删除或无模型权限"
+    if code == 429:
+        return "调用频率或账户额度受限，请稍后重试"
+    text = str(error).lower()
+    if "timed out" in text or "timeout" in text:
+        return "连接超时，请检查网络后重试"
+    return "智谱服务暂不可用，请检查网络或稍后重试"
+
+
+def zhipu_chat(messages, model="glm-4v-flash", timeout=60, max_tokens=None):
     key = zhipu_key()
     if not key:
         raise RuntimeError("未配置 ZHIPUAI_API_KEY")
-    payload = {
-        "model": model,
-        "messages": [{
+    payload = {"model": model, "messages": messages}
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    req = urllib.request.Request(
+        "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["choices"][0]["message"]["content"] or ""
+
+
+def ocr_b64(b64, mime, model="glm-4v-flash", timeout=60):
+    """把 base64 图片发到智谱视觉模型，返回识别出的纯文本。"""
+    return zhipu_chat([{
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}},
@@ -327,15 +352,21 @@ def ocr_b64(b64, mime, model="glm-4v-flash", timeout=60):
                          "xxx」「开票日期：xxxx年x月x日」「价税合计（小写）¥xx.xx」「销售方名称」「购买方名称」"
                          "「项目名称」下的明细等关键内容。不要解释、不要总结。"},
             ],
-        }],
-    }
-    req = urllib.request.Request(
-        "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"] or ""
+        }], model, timeout)
+
+
+def pick_folder(initial=""):
+    """调用系统目录选择器；取消时返回空字符串。"""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        start = initial if initial and os.path.isdir(initial) else os.path.expanduser("~/Desktop")
+        return filedialog.askdirectory(initialdir=start, mustexist=True) or ""
+    finally:
+        root.destroy()
 
 
 def ocr_image_file(path, model="glm-4v-flash"):
@@ -390,7 +421,7 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
                     try:
                         chunks.append(ocr_b64(b64, "image/png", ocr_model))
                     except Exception as e:
-                        warn = "PDF页OCR失败:%s" % e
+                        warn = "PDF页OCR失败：%s" % friendly_ocr_error(e)
                 if chunks:
                     text = "\n".join(chunks)
                     warn = None
@@ -406,7 +437,7 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
                 did_ocr = True
                 warn = None if text.strip() else "OCR返回为空"
             except Exception as e:
-                warn = "OCR失败:%s" % e
+                warn = "OCR失败：%s" % friendly_ocr_error(e)
         else:
             warn = "图片发票未启用OCR(需配置ZHIPUAI_API_KEY)"
     fields = extract_fields(text or "", os.path.basename(path), company_names)
@@ -896,6 +927,8 @@ class Handler(BaseHTTPRequestHandler):
             reused = sum(r.get("in_watch") and any(d.get("is_used") for d in r["dups"]) for r in recs)
             watch_count = sum(bool(r.get("in_watch")) for r in recs)
             used_count = sum(bool(r.get("in_used_dir")) for r in recs)
+            ai_error = next((r.get("warn") for r in recs if r.get("warn") and
+                             ("OCR失败" in r["warn"] or "PDF页OCR失败" in r["warn"])), "")
             return self._send(200, json.dumps({
                 "records": recs, "categories": cats,
                 "stats": {"total": len(recs), "dup": n_dup, "used": n_used,
@@ -903,9 +936,29 @@ class Handler(BaseHTTPRequestHandler):
                           "warn_all": n_warn, "amount_ok": n_amt,
                           "ocr_key": bool(zhipu_key()), "dup_pairs": len(pairs),
                           "reused": reused, "watch_count": watch_count,
-                          "used_count": used_count},
+                          "used_count": used_count, "ai_error": ai_error},
                 "config": {**cfg, "ocr_key_configured": bool(zhipu_key())},
             }, ensure_ascii=False))
+        if u.path == "/api/pick-folder":
+            try:
+                path = pick_folder(self._read_json().get("initial") or "")
+                return self._send(200, json.dumps({"path": path}, ensure_ascii=False))
+            except Exception:
+                return self._send(500, json.dumps(
+                    {"error": "无法打开 Windows 文件夹选择器，请直接粘贴目录路径"}, ensure_ascii=False))
+        if u.path == "/api/ocr-status":
+            if not zhipu_key():
+                return self._send(200, json.dumps({"ok": False, "configured": False,
+                    "message": "尚未配置智谱 API Key"}, ensure_ascii=False))
+            body = self._read_json()
+            try:
+                zhipu_chat([{"role": "user", "content": "仅回复OK"}],
+                           body.get("model") or "glm-4v-flash", timeout=20, max_tokens=2)
+                return self._send(200, json.dumps({"ok": True, "configured": True,
+                    "message": "连接正常"}, ensure_ascii=False))
+            except Exception as e:
+                return self._send(200, json.dumps({"ok": False, "configured": True,
+                    "message": friendly_ocr_error(e)}, ensure_ascii=False))
         if u.path == "/api/override":
             body = self._read_json()
             path = body.get("path")
