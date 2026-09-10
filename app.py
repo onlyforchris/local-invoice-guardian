@@ -17,11 +17,13 @@
 """
 import argparse
 import base64
+import glob
 import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -49,14 +51,27 @@ try:
 except Exception:
     pdfium = None
     Image = None
+try:
+    # 本地 OCR 为可选依赖：未安装时自动降级到 AI 识别，不影响主流程
+    from rapidocr_onnxruntime import RapidOCR
+except Exception:
+    RapidOCR = None
 
 LEDGER = os.path.join(APP_DIR, "invoice_ledger.json")
+# 已报销永久库：脱离发票文件位置存在，即使原文件被移动/删除也能持续查重
+USED_LEDGER = os.path.join(APP_DIR, "used_ledger.json")
+BACKUP_DIR = os.path.join(APP_DIR, "backups")
 CONFIG = os.path.join(APP_DIR, "config.json")
 STATIC = os.path.join(APP_DIR, "index.html")
-ENGINE_VER = 7  # 引擎版本；升级后旧台账自动失效重解析
-APP_VERSION = "1.2.1"
-INVOICE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+ENGINE_VER = 10  # 引擎版本；升级后旧台账自动失效重解析（改解析逻辑必须同步升级！）
+APP_VERSION = "1.4.3"
+INVOICE_EXTS = {".pdf", ".ofd", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 BUYER_DEFAULT = []
+BACKUP_KEEP = 5
+# 台账健康状态：损坏时不再静默清空，必须让用户看见并可恢复
+LEDGER_STATUS = {"error": None, "backups": [], "record_count": 0}
+VERIFY_CHOICES = ("未查验", "已查验通过", "查验异常")
+REJECT_CHOICES = ("", "重复报销", "抬头/税号不符", "疑似假票", "金额不符", "票面信息不全", "其他")
 
 # ---------- 报销分类科目（13 类）----------
 CATALOG = [
@@ -99,8 +114,14 @@ DEFAULT_CATEGORIES = [
 STATE_LOCK = threading.RLock()
 
 COMPANY_RE = re.compile(
+    # 公司名必须以汉字/全角括号开头：防止杂串粘连（如“b017上海亿流…”被当成公司名）
+    r"(?=[\u4e00-\u9fa5（(])"
     r"[\u4e00-\u9fa5A-Za-z0-9（）()·]+?"
-    r"(?:有限公司|有限责任公司|股份有限公司|个体工商户|合伙企业|工作室)")
+    r"(?:有限公司|有限责任公司|股份有限公司|个体工商户|合伙企业|工作室"
+    r"|服务中心|购物中心|合作社|事务所|招待所|门市部|经营部|加工厂|汽修厂|幼儿园|食堂"
+    r"|商行|超市|餐厅|饭店|酒店|宾馆|大药房|药店|诊所|美容院|医院"
+    r"|便利店|小吃店|水果店|奶茶店|咖啡店|甜品店|烘焙店|理发店|打印店|图文店"
+    r"|店)")
 
 
 def get_categories(cfg=None):
@@ -162,18 +183,30 @@ def norm_date(raw):
 # ---------- 从正文提取字段（PDF 文本与 OCR 文本共用）----------
 def _companies(text):
     out = []
-    candidates = COMPANY_RE.findall(text or "")
-    candidates += re.findall(r"名称[:：]\s*([^\n]{2,60})", text or "")
-    taxes = list(re.finditer(r"(?<![0-9A-Z])[0-9A-Z]{15,20}(?![0-9A-Z])", text or ""))
-    candidates += [(text or "")[a.end():b.start()] for a, b in zip(taxes, taxes[1:])]
-    for c in candidates:
-        c = re.sub(r"\s+", "", c).strip(":：")
-        if (4 <= len(re.findall(r"[\u4e00-\u9fa5]", c)) <= 40
-                and not re.search(r"发票|统一社会信用|纳税人识别号|项目名称", c)
-                and not norm_date(c)
-                and c not in out):
-            out.append(c)
-    return out
+    # NFKC 会把全角括号转成半角，而公司名中可能夹有空格（如“杭 州”），
+    # 字符类不含空白会从空格处截断。补跑一份去空白文本，找回完整公司名。
+    # 源2：仅压缩汉字/括号之间的空格与制表符（不含换行，避免跨行粘连），
+    # 修复“杭 州”这类断裂；ASCII（税号）不受影响，避免税号与公司名粘连
+    sources = [(text or "", True),
+               (re.sub(r"(?<=[\u4e00-\u9fa5（）()·])[ \t\u00a0]+(?=[\u4e00-\u9fa5（）()·])",
+                       "", text or ""), False)]
+    for src, allow_taxgap in sources:
+        candidates = COMPANY_RE.findall(src)
+        candidates += re.findall(r"名称[:：]\s*([^\n]{2,60})", src)
+        if allow_taxgap:  # “税号之间取文本”仅用于原文本；去空白文本会把税号吞进公司名
+            taxes = list(re.finditer(r"(?<![0-9A-Z])[0-9A-Z]{15,20}(?![0-9A-Z])", src))
+            for a, b in zip(taxes, taxes[1:]):
+                # 间隙里再用公司名正则提取，避免把“金额,日期,杂串”整段吞成候选
+                candidates += COMPANY_RE.findall(src[a.end():b.start()])
+        for c in candidates:
+            c = re.sub(r"\s+", "", c).strip(":：")
+            if (4 <= len(re.findall(r"[\u4e00-\u9fa5]", c)) <= 40
+                    and not re.search(r"发票|统一社会信用|纳税人识别号|项目名称", c)
+                    and not norm_date(c)
+                    and c not in out):
+                out.append(c)
+    # 截断候选（如“州)餐饮管理有限公司”）已被完整版本包含时丢弃，保留最完整公司名
+    return [c for c in out if not any(c != o and c in o for o in out)]
 
 
 def extract_fields(text, fname="", company_names=None):
@@ -181,6 +214,15 @@ def extract_fields(text, fname="", company_names=None):
     # 一些通行费 PDF 会在每个字符前插入 NUL；先清理再做结构化匹配。
     t = unicodedata.normalize("NFKC", (text or "").replace("\x00", "")).translate(
         str.maketrans({"⻔": "门", "⻝": "食"}))
+    # 数电票新版式：标签与值分离（“发票号码：\n”后无值），且数值被逐位拆开
+    # （如 “2 6 3 3 ...”、“¥5 8 . 5 8”、“2 0 2 6 年0 9 月0 9 日”）。
+    # 把「数字/¥/小数点 之间仅隔空白」的稀疏序列压缩还原，否则号码/日期/金额全部漏识别。
+    t = re.sub(r"(?<=[0-9¥￥.])[ \t\r\n]+(?=[0-9¥￥.])", "", t)
+    # 关键金额标签被逐字拆开（“合 计”“价 税 合 计”“（ 小 写 ）”），先归位再做金额匹配；
+    # 否则标签锚点全部失配，金额只能靠 ¥ 兜底，容易抓错。
+    t = re.sub(r"价\s*税\s*合\s*计", "价税合计", t)
+    t = re.sub(r"合\s*计", "合计", t)
+    t = re.sub(r"小\s*写", "小写", t)
     t2 = re.sub(r"(\d),(?=\d{3})", r"\1", t)
     f = {"no": None, "code": None, "date": None, "amount_cents": None,
          "seller": None, "buyer": None, "kind": "其他", "items": []}
@@ -213,9 +255,13 @@ def extract_fields(text, fname="", company_names=None):
         if m and _valid_date(*m.groups()):
             f["date"] = "%04d-%02d-%02d" % tuple(int(x) for x in m.groups())
 
-    # 金额：价税合计（小写）→ （小写）→ 合计 → 最大 ¥
+    # 金额：价税合计（小写）→ 价税合计后首个数字 → （小写）→ 合计 → 最大 ¥
+    # 「数字在前、¥ 在后」版式（如 “…377.67¥叁佰…”）由第二条模式覆盖，
+    # 否则这类票只能落到 ¥ 兜底，而稀疏归一化会把 “366.67¥ 11.00¥” 拼成
+    # “366.67¥11.00¥” 造出假 “¥11.00”，金额直接抓错。
     amt = None
     for pat in (r"价税合计[^¥￥]{0,24}[¥￥]\s*([0-9]+\.\d{2})",
+                r"价税合计[^0-9]{0,20}([0-9]+\.\d{2})",
                 r"[（(]\s*小写\s*[)）]\s*[:：]?\s*[¥￥]?\s*([0-9]+\.\d{2})",
                 r"(?:合计|合计金额)[^0-9¥￥]{0,12}([0-9]+\.\d{2})"):
         m = re.search(pat, t2)
@@ -223,10 +269,20 @@ def extract_fields(text, fname="", company_names=None):
             amt = m.group(1)
             break
     if amt is None:
-        nums = re.findall(r"[¥￥]\s*([0-9]+\.\d{2})", t2)
+        # ¥ 兜底同时收「¥在数字前」和「¥在数字后」两种写法，取最大
+        nums = re.findall(r"[¥￥]\s*([0-9]+\.\d{2})", t2) + \
+               re.findall(r"([0-9]+\.\d{2})[ \t]*[¥￥]", t2)
         if nums:
             amt = max(nums, key=lambda x: Decimal(x))
     f["amount_cents"] = norm_amount_cents(amt)
+
+    # 不含税合计与税额：仅在同行出现两个金额时才采信，用于金额自洽校验
+    f["amount_excl_cents"] = None
+    f["tax_cents"] = None
+    m = re.search(r"合\s*计[^0-9¥￥\n]{0,10}[¥￥]?\s*([0-9]+\.\d{2})[^0-9¥￥\n]{0,10}[¥￥]?\s*([0-9]+\.\d{2})", t2)
+    if m:
+        f["amount_excl_cents"] = norm_amount_cents(m.group(1))
+        f["tax_cents"] = norm_amount_cents(m.group(2))
 
     # 购销双方：公司名识别，购方=本公司（config 可改）
     buyers = company_names or BUYER_DEFAULT
@@ -236,12 +292,14 @@ def extract_fields(text, fname="", company_names=None):
         s = next((c for c in comps if c != b), None)
         f["buyer"], f["seller"] = b, s
 
-    # 类型
-    if "数电" in t2:
+    # 类型：数电票标题为“电子发票（普通/专用发票）”（NFKC 后括号为半角），
+    # 与老版“增值税普通/专用发票”区分，便于财务按票种核验
+    if ("数电" in t2 or "电子发票（普通" in t2 or "电子发票(普通" in t2
+            or "电子发票（专用" in t2 or "电子发票(专用" in t2):
         f["kind"] = "数电票"
     elif "增值税专用发票" in t2:
         f["kind"] = "增值税专用发票"
-    elif "增值税普通发票" in t2 or "电子发票（普通" in t2:
+    elif "增值税普通发票" in t2:
         f["kind"] = "增值税普通发票"
     elif "行程单" in t2:
         f["kind"] = "行程单"
@@ -265,6 +323,231 @@ def extract_fields(text, fname="", company_names=None):
     f["svc"] = re.findall(r"\*[^*\n]{1,30}\*([^*\n]{2,40})", t2)[:4]
 
     return f
+
+
+def parse_history_csv(text):
+    """解析财务已有的 Excel/CSV 台账（列顺序不限），最小集 = 号码 + 金额。"""
+    import csv as _csv
+    out = []
+    for row in _csv.reader(io.StringIO(text or "")):
+        cells = [c.strip() for c in row if c and c.strip()]
+        if not cells:
+            continue
+        no = date = seller = None
+        cents = None
+        for c in cells:
+            if date is None:
+                d = norm_date(c)
+                if d:
+                    date = d
+                    continue
+            if no is None and re.fullmatch(r"\d{8}|\d{20}", c):
+                no = c
+                continue
+            if cents is None and re.fullmatch(r"[¥￥]?\s*-?\d+\.\d{2}", c):
+                cents = norm_amount_cents(c)
+                continue
+            if seller is None and len(c) <= 40 and re.search(r"[\u4e00-\u9fa5]{4}", c) \
+                    and not re.search(r"已报|未报|报销|发票|状态|分类|合计", c):
+                seller = c
+        if no or (cents is not None and date):
+            out.append({"no": no, "code": None, "amount_cents": cents, "date": date,
+                        "seller": seller, "fname": "（历史台账导入）", "path": "",
+                        "buyer": None, "kind": None, "cat_label": None})
+    return out
+
+
+def archive_name(r):
+    """归档规范命名：日期_销售方_金额_号码，便于日后按文件名检索。
+
+    号码缺失时退回原文件名，避免多张未识别票挤成同一个名字。
+    """
+    ext = os.path.splitext(r.get("fname") or "")[1]
+    if not r.get("no"):
+        stem = os.path.splitext(r.get("fname") or "未识别发票")[0]
+        return re.sub(r'[\\/:*?"<>|\r\n\t]', "", stem)[:60] + ext
+    safe = re.sub(r'[\\/:*?"<>|\r\n\t]', "", r.get("seller") or "未知销售方")[:20]
+    return "_".join([r.get("date") or "无日期", safe,
+                     "%.2f" % ((r.get("amount_cents") or 0) / 100),
+                     r.get("no")]) + ext
+
+
+export_worksheet_head = ["序号", "提交人/批次", "文件名", "发票号码", "开票日期",
+                         "销售方", "金额(元)", "费用分类", "查验状态",
+                         "合规校验", "退回原因", "报销状态"]
+
+
+def export_worksheet(recs):
+    """审核底稿：明细 + 按提交人小计 + 合计 + 退回清单，可直接打印/存档。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    rows = [r for r in recs if r.get("in_watch")]
+    rows.sort(key=lambda r: (r.get("folder") or "", r.get("date") or "", r.get("fname") or ""))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "审核底稿"
+    bold = Font(bold=True)
+    ws.append(export_worksheet_head)
+    for c in ws[1]:
+        c.font = bold
+    for i, r in enumerate(rows, 1):
+        issues = "；".join(r.get("check_issues") or [])
+        ws.append([i, r.get("folder") or "", r.get("fname") or "", r.get("no") or "",
+                   r.get("date") or "", r.get("seller") or "",
+                   (r.get("amount_cents") or 0) / 100, r.get("cat_label") or "",
+                   r.get("verify_status") or "未查验", issues,
+                   r.get("reject_reason") or "",
+                   "已报销" if r.get("is_used") else "待报销"])
+    n = len(rows)
+    # 按提交人小计
+    start = n + 3
+    ws.cell(row=start, column=1, value="按提交人/批次小计").font = bold
+    sums = {}
+    for r in rows:
+        sums[r.get("folder") or "（未分组）"] = sums.get(r.get("folder") or "（未分组）", 0) \
+            + (r.get("amount_cents") or 0)
+    for j, (k, v) in enumerate(sorted(sums.items()), start + 1):
+        ws.cell(row=j, column=2, value=k)
+        c = ws.cell(row=j, column=7, value=v / 100)
+        c.number_format = "0.00"
+    total_row = start + 1 + len(sums) + 1
+    ws.cell(row=total_row, column=1, value="合计").font = bold
+    t = ws.cell(row=total_row, column=7, value="=SUM(G2:G%d)" % (n + 1))
+    t.font = bold
+    t.number_format = "0.00"
+    widths = {1: 6, 2: 18, 3: 30, 4: 22, 5: 12, 6: 26, 7: 12, 8: 14, 9: 12, 10: 30, 11: 14, 12: 10}
+    for k, v in widths.items():
+        ws.column_dimensions[ws.cell(row=1, column=k).column_letter].width = v
+    # 退回清单
+    rejected = [r for r in rows if r.get("reject_reason")]
+    ws2 = wb.create_sheet("退回清单")
+    ws2.append(["提交人/批次", "文件名", "发票号码", "金额(元)", "退回原因"])
+    for c in ws2[1]:
+        c.font = bold
+    for r in rejected:
+        ws2.append([r.get("folder") or "", r.get("fname") or "", r.get("no") or "",
+                    (r.get("amount_cents") or 0) / 100, r.get("reject_reason")])
+    if not rejected:
+        ws2.append(["（无退回票据）", "", "", "", ""])
+    for col, w in zip("ABCDE", (18, 30, 22, 12, 16)):
+        ws2.column_dimensions[col].width = w
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ---------- 合规校验（财务核验环节）----------
+def validate_fields(f, today=None):
+    """字段自校验。抓不到就不校验，宁可少报也不误报。"""
+    issues = []
+    no = f.get("no")
+    if no and len(no) not in (8, 20):
+        issues.append("发票号码位数异常（%d 位，常见为 8 位或数电票 20 位）" % len(no))
+    date = f.get("date")
+    if date:
+        today = today or time.strftime("%Y-%m-%d")
+        if date > today:
+            issues.append("开票日期晚于今天（%s）" % date)
+        elif date < "2010-01-01":
+            issues.append("开票日期过早（%s）" % date)
+    cents = f.get("amount_cents")
+    if cents is not None:
+        if cents <= 0:
+            issues.append("金额异常（≤0）")
+        elif cents > 1000000000:
+            issues.append("金额异常偏大，请核对票面")
+    excl, tax = f.get("amount_excl_cents"), f.get("tax_cents")
+    if cents is not None and excl is not None and tax is not None:
+        if abs(excl + tax - cents) > 100:  # 容差 1 元，规避四舍五入噪声
+            issues.append("金额自洽未通过：不含税 %.2f + 税额 %.2f ≠ 价税合计 %.2f" % (
+                excl / 100, tax / 100, cents / 100))
+    return issues
+
+
+def check_buyer(f, company_names):
+    """抬头校验：未配置本公司名称时不校验，避免无意义告警。"""
+    names = [n for n in (company_names or []) if n]
+    if not names:
+        return "未校验", f.get("buyer")
+    buyer = f.get("buyer") or ""
+    if not buyer:
+        return "待核对", ""
+    return ("符合" if any(n in buyer for n in names) else "不符"), buyer
+
+
+# ---------- OFD（数电票官方格式）----------
+def _xml_local(tag):
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def read_ofd_text(path):
+    """解析 OFD 票面文本：OFD 本质是 zip，票面文字在 Content.xml 的 TextCode 中。
+
+    只读不写、不联网、不需要第三方库。解析失败返回空字符串。
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    out = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+            root_name = "OFD.xml"
+            if root_name not in names:
+                root_name = next((n for n in names if n.lower().endswith("ofd.xml")), None)
+            if not root_name:
+                return ""
+            doc_root = None
+            try:
+                root = ET.fromstring(zf.read(root_name))
+                for el in root.iter():
+                    if _xml_local(el.tag) == "DocRoot" and (el.text or "").strip():
+                        doc_root = el.text.strip().lstrip("/")
+                        break
+            except Exception:
+                return ""
+            if not doc_root:
+                return ""
+            base = os.path.dirname(doc_root)
+            doc_dir = (base + "/") if base else ""
+            page_locs = []
+            try:
+                doc = ET.fromstring(zf.read(doc_root))
+                for el in doc.iter():
+                    if _xml_local(el.tag) == "Page":
+                        loc = el.attrib.get("BaseLoc") or ""
+                        if loc:
+                            page_locs.append(loc.lstrip("/"))
+            except Exception:
+                return ""
+            for loc in page_locs:
+                full = loc if loc in names else (doc_dir + loc)
+                if full not in names:
+                    continue
+                try:
+                    content = ET.fromstring(zf.read(full))
+                except Exception:
+                    continue
+                # 按 TextObject 的 Boundary 纵向排序，保证阅读顺序
+                items = []
+                for obj in content.iter():
+                    if _xml_local(obj.tag) != "TextObject":
+                        continue
+                    y = 0.0
+                    try:
+                        b = obj.attrib.get("Boundary") or ""
+                        if b:
+                            y = float(b.split()[1])
+                    except (IndexError, ValueError):
+                        pass
+                    txt = "".join(t.text or "" for t in obj.iter()
+                                  if _xml_local(t.tag) == "TextCode")
+                    if txt.strip():
+                        items.append((y, txt))
+                items.sort(key=lambda x: x[0])
+                out.extend(t for _y, t in items)
+    except Exception:
+        return ""
+    return "\n".join(out)
 
 
 # ---------- 文件与 OCR ----------
@@ -423,6 +706,131 @@ def ocr_image_file(path, model="glm-4v-flash"):
     return ocr_b64(b64, mime, model)
 
 
+# ---------- 本地 OCR（RapidOCR，可选依赖）----------
+_RAPID = None
+_RAPID_FAILED = False
+
+
+def rapid_engine():
+    """懒加载本地识别引擎；未安装或初始化失败返回 None。"""
+    global _RAPID, _RAPID_FAILED
+    if RapidOCR is None or _RAPID_FAILED:
+        return None
+    if _RAPID is None:
+        try:
+            _RAPID = RapidOCR()
+        except Exception:
+            _RAPID_FAILED = True
+            return None
+    return _RAPID
+
+
+def local_ocr_ready():
+    return RapidOCR is not None and not _RAPID_FAILED
+
+
+# 本机识别组件自动安装：首次启动或升级后若未安装，后台静默装上，用户无感知
+OCR_INSTALL = {"status": "idle"}  # idle / installing / ready / failed
+_OCR_INSTALLStarted = False
+
+
+def _boot_mtime():
+    """记录启动时 app.py 的修改时间，用于判断「代码已更新但服务未重启」。"""
+    try:
+        return os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return 0.0
+
+
+BOOT_MTIME = _boot_mtime()
+
+
+def code_stale():
+    """app.py 在进程启动之后被改过 → 页面提示用户重启，避免白跑旧代码。"""
+    try:
+        return abs(os.path.getmtime(os.path.abspath(__file__)) - BOOT_MTIME) > 0.5
+    except OSError:
+        return False
+
+
+def _pip_install_ocr():
+    import subprocess
+    pkg = "rapidocr-onnxruntime>=1.4,<2"
+    attempts = [
+        [sys.executable, "-m", "pip", "install", pkg,
+         "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"],
+        [sys.executable, "-m", "pip", "install", pkg],
+    ]
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=900)
+            if r.returncode == 0:
+                break
+        except Exception:
+            continue
+    global _RAPID, _RAPID_FAILED
+    _RAPID = None       # 重新懒加载，让新装的组件立即生效
+    _RAPID_FAILED = False
+    OCR_INSTALL["status"] = "ready" if local_ocr_ready() else "failed"
+
+
+def ensure_local_ocr_async():
+    """启动时调用：未安装则后台静默安装，绝不阻断启动与使用。"""
+    global _OCR_INSTALLStarted
+    if _OCR_INSTALLStarted:
+        return
+    _OCR_INSTALLStarted = True
+    if local_ocr_ready():
+        OCR_INSTALL["status"] = "ready"
+        return
+    def _worker():
+        OCR_INSTALL["status"] = "installing"
+        _pip_install_ocr()
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def local_ocr_image(pil_img):
+    """对 PIL 图片做本地识别，返回按阅读顺序排列的文本。失败抛异常由调用方兜底。"""
+    import numpy as np
+    eng = rapid_engine()
+    if eng is None:
+        raise RuntimeError("本地识别组件未安装")
+    img = pil_img.convert("RGB")
+    # 长边降采样：显著提速并降低超大图失败率
+    long_side = 1600
+    w, h = img.size
+    if max(w, h) > long_side:
+        ratio = long_side / float(max(w, h))
+        img = img.resize((int(w * ratio), int(h * ratio)))
+    result, _ = eng(np.array(img))
+    if not result:
+        return ""
+    ordered = sorted(result, key=lambda x: (min(p[1] for p in x[0]), min(p[0] for p in x[0])))
+    return "\n".join(str(t).strip() for _box, t, _score in ordered if t)
+
+
+def local_ocr_file(path):
+    """图片发票的本地识别。"""
+    if Image is None:
+        raise RuntimeError("缺少 Pillow 组件")
+    with Image.open(path) as im:
+        return local_ocr_image(im)
+
+
+def local_ocr_pdf(path, scale=2.2, max_pages=4):
+    """无文本层 PDF：渲染成图后本地识别。"""
+    if pdfium is None or Image is None:
+        raise RuntimeError("缺少 PDF 渲染组件")
+    texts = []
+    doc = pdfium.PdfDocument(path)
+    try:
+        for i in range(min(len(doc), max_pages)):
+            texts.append(local_ocr_image(doc[i].render(scale=scale).to_pil()))
+    finally:
+        doc.close()
+    return "\n".join(texts)
+
+
 def render_pdf_pages(path, scale=2.2, max_pages=4):
     """无文本层 PDF -> 渲染成 PNG -> base64 列表（pypdfium2）。"""
     if pdfium is None:
@@ -449,7 +857,15 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
     text = ""
     pdf_text = ""
     did_ocr = False
-    if ext == ".pdf":
+    engine_used = None  # local=本机识别 / ai=智谱；用于前端如实标注与缓存自愈
+    if ext == ".ofd":
+        # 数电票官方格式：直接读 XML 票面文本，最准且不联网、不需要第三方库
+        text = read_ofd_text(path)
+        if not re.sub(r"\s", "", text or ""):
+            warn = "OFD 未解析到票面文本（可能是扫描件版式）"
+            if ocr_enabled:
+                text = ""  # 交由下方统一兜底逻辑处理
+    elif ext == ".pdf":
         if PdfReader is not None:
             try:
                 text = "".join((p.extract_text() or "") for p in PdfReader(path).pages)
@@ -458,33 +874,54 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
                 warn = "PDF解析异常:%s" % e
         # 文本过少或字符编码损坏时尝试渲染 OCR。
         needs_ocr = len(re.sub(r"\s", "", text or "")) < 40 or text.count("\x00") >= 8
-        if needs_ocr and ocr_enabled and zhipu_key():
-            try:
-                pages = render_pdf_pages(path)
-                chunks = []
-                for b64 in pages:
-                    try:
-                        chunks.append(ocr_b64(b64, "image/png", ocr_model))
-                    except Exception as e:
-                        warn = "PDF页OCR失败：%s" % friendly_ocr_error(e)
-                if chunks:
-                    text = "\n".join(chunks)
-                    warn = None
-                    did_ocr = True
-            except Exception as e:
-                warn = "PDF渲染失败:%s" % e
+        if needs_ocr and ocr_enabled:
+            # 优先本地识别（免 Key、数据不出本机），不可用时再走 AI
+            if local_ocr_ready():
+                try:
+                    local_text = local_ocr_pdf(path)
+                    if local_text.strip():
+                        text, warn, did_ocr = local_text, None, True
+                        engine_used = "local"
+                except Exception as e:
+                    warn = "本地识别失败：%s" % e
+            if not did_ocr and zhipu_key():
+                try:
+                    pages = render_pdf_pages(path)
+                    chunks = []
+                    for b64 in pages:
+                        try:
+                            chunks.append(ocr_b64(b64, "image/png", ocr_model))
+                        except Exception as e:
+                            warn = "PDF页OCR失败：%s" % friendly_ocr_error(e)
+                    if chunks:
+                        text = "\n".join(chunks)
+                        warn = None
+                        did_ocr = True
+                        engine_used = "ai"
+                except Exception as e:
+                    warn = "PDF渲染失败:%s" % e
         if not warn and needs_ocr and not did_ocr:
             warn = "PDF无可用文本层且未完成OCR(需配置ZHIPUAI_API_KEY)"
     else:  # 图片
-        if ocr_enabled and zhipu_key():
-            try:
-                text = ocr_image_file(path, ocr_model)
-                did_ocr = True
-                warn = None if text.strip() else "OCR返回为空"
-            except Exception as e:
-                warn = "OCR失败：%s" % friendly_ocr_error(e)
-        else:
-            warn = "图片发票未启用OCR(需配置ZHIPUAI_API_KEY)"
+        if ocr_enabled:
+            if local_ocr_ready():
+                try:
+                    local_text = local_ocr_file(path)
+                    if local_text.strip():
+                        text, warn, did_ocr = local_text, None, True
+                        engine_used = "local"
+                except Exception as e:
+                    warn = "本地识别失败：%s" % e
+            if not did_ocr and zhipu_key():
+                try:
+                    text = ocr_image_file(path, ocr_model)
+                    did_ocr = True
+                    engine_used = "ai"
+                    warn = None if text.strip() else "OCR返回为空"
+                except Exception as e:
+                    warn = "OCR失败：%s" % friendly_ocr_error(e)
+            if not did_ocr and not warn:
+                warn = "图片发票未启用OCR(需配置ZHIPUAI_API_KEY)"
     fields = extract_fields(text or "", os.path.basename(path), company_names)
     if did_ocr and pdf_text:
         fallback = extract_fields(pdf_text, os.path.basename(path), company_names)
@@ -503,11 +940,13 @@ def parse_file(path, ocr_enabled=True, ocr_model="glm-4v-flash", company_names=N
         warn = "%s；%s" % (warn, detail) if warn else detail
     fields["class_text"] = (text or "")[:6000]
     fields["ocr"] = did_ocr
+    fields["ocr_engine"] = engine_used
     return fields, warn
 
 
 def fingerprint(fields, md5hex):
-    keys = [("exact", "md5|%s" % md5hex)]
+    # 永久库条目没有文件内容，md5 为空时不能生成 exact 键，否则会互相误判重复
+    keys = [("exact", "md5|%s" % md5hex)] if md5hex else []
     if fields.get("no") and fields.get("amount_cents"):
         keys.append(("high", "no+amt|%s|%s" % (fields["no"], fields["amount_cents"])))
     if fields.get("no"):
@@ -522,20 +961,159 @@ def fingerprint(fields, md5hex):
 
 
 # ---------- 台账 ----------
+def _rotate_backup(path, tag=""):
+    """写入前滚动备份，保留最近 BACKUP_KEEP 份。
+
+    tag 用于区分来源（如 prerestore），避免同名同秒覆盖掉另一份有效备份。
+    """
+    if not os.path.exists(path):
+        return None
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        name = os.path.basename(path)
+        stamp = time.strftime("%Y%m%d-%H%M%S") + ("-" + tag if tag else "")
+        dst = os.path.join(BACKUP_DIR, "%s.%s.bak" % (name, stamp))
+        i = 1
+        while os.path.exists(dst):  # 同秒冲突时绝不覆盖已有备份
+            dst = os.path.join(BACKUP_DIR, "%s.%s-%d.bak" % (name, stamp, i))
+            i += 1
+        shutil.copy2(path, dst)
+        olds = sorted(glob.glob(os.path.join(BACKUP_DIR, name + ".*.bak")), reverse=True)
+        for old in olds[BACKUP_KEEP:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        return dst
+    except OSError:
+        return None
+
+
+def list_backups():
+    if not os.path.isdir(BACKUP_DIR):
+        return []
+    items = []
+    for p in sorted(glob.glob(os.path.join(BACKUP_DIR, "*.bak")), reverse=True):
+        try:
+            items.append({"name": os.path.basename(p), "size": os.path.getsize(p),
+                          "mtime": time.strftime("%Y-%m-%d %H:%M:%S",
+                                                 time.localtime(os.path.getmtime(p)))})
+        except OSError:
+            continue
+    return items[:20]
+
+
 def load_ledger():
+    """读取台账。损坏时保留现场并登记状态，绝不静默当成空台账。"""
     if os.path.exists(LEDGER):
         try:
-            return json.load(open(LEDGER, encoding="utf-8"))
-        except Exception:
-            return {"version": 2, "records": {}}
-    return {"version": 2, "records": {}}
+            with open(LEDGER, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and isinstance(data.get("records"), dict):
+                LEDGER_STATUS["error"] = None
+                LEDGER_STATUS["record_count"] = len(data["records"])
+                return data
+            raise ValueError("台账结构异常")
+        except Exception as e:
+            # 保住损坏现场，避免后续写入把唯一副本覆盖掉
+            try:
+                os.makedirs(BACKUP_DIR, exist_ok=True)
+                shutil.copy2(LEDGER, os.path.join(
+                    BACKUP_DIR, "invoice_ledger.corrupt-%s.bak" % time.strftime("%Y%m%d-%H%M%S")))
+            except OSError:
+                pass
+            LEDGER_STATUS["error"] = "台账文件损坏或格式异常（%s），已自动留档，可在「台账恢复」中还原。" % e
+            LEDGER_STATUS["backups"] = list_backups()
+            return {"version": ENGINE_VER, "records": {}}
+    LEDGER_STATUS["error"] = None
+    return {"version": ENGINE_VER, "records": {}}
 
 
 def save_ledger(led):
+    _rotate_backup(LEDGER)
     tmp = LEDGER + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(led, fh, ensure_ascii=False, indent=1)
     os.replace(tmp, LEDGER)
+    LEDGER_STATUS["record_count"] = len(led.get("records", {}))
+
+
+def restore_ledger(name):
+    """从备份还原台账；只允许还原 backups 目录内的文件。"""
+    path = os.path.join(BACKUP_DIR, os.path.basename(name))
+    if not os.path.isfile(path) or os.path.dirname(os.path.abspath(path)) != os.path.abspath(BACKUP_DIR):
+        raise ValueError("备份文件不存在")
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        if not (isinstance(data, dict) and isinstance(data.get("records"), dict)):
+            raise ValueError("该备份不是有效的台账文件")
+    except Exception as e:
+        raise ValueError("备份无法解析：%s" % e)
+    # 用 prerestore 标签另存当前文件，避免同秒覆盖掉正要还原的那份备份
+    _rotate_backup(LEDGER, "prerestore")
+    shutil.copy2(path, LEDGER)
+    LEDGER_STATUS["error"] = None
+    return len(data["records"])
+
+
+def load_used_ledger():
+    """已报销永久库：结构 {version, items:[...]}，脱离文件位置存在。"""
+    if os.path.exists(USED_LEDGER):
+        try:
+            with open(USED_LEDGER, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and isinstance(data.get("items"), list):
+                return data
+        except Exception:
+            pass
+    return {"version": 1, "items": []}
+
+
+def save_used_ledger(data):
+    _rotate_backup(USED_LEDGER)
+    tmp = USED_LEDGER + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, USED_LEDGER)
+
+
+def used_ledger_add(records, batch=""):
+    """把一批记录并入已报销永久库，按 (号码+金额) 去重，返回新增条数。"""
+    data = load_used_ledger()
+    seen = set()
+    for it in data["items"]:
+        seen.add(used_item_key(it))
+    added = 0
+    now = time.time()
+    for r in records:
+        key = used_item_key(r)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        data["items"].append({
+            "no": r.get("no"), "code": r.get("code"),
+            "amount_cents": r.get("amount_cents"), "date": r.get("date"),
+            "seller": r.get("seller"), "buyer": r.get("buyer"),
+            "kind": r.get("kind"), "cat_label": r.get("cat_label"),
+            "fname": r.get("fname"), "path": r.get("path"),
+            "batch": batch or time.strftime("%Y-%m"), "closed_at": now,
+        })
+        added += 1
+    if added:
+        save_used_ledger(data)
+    return added
+
+
+def used_item_key(r):
+    """永久库唯一键：优先 号码+金额，其次 代码+号码，避免 20 位兜底误抓重复入库。"""
+    no = (r or {}).get("no")
+    cents = (r or {}).get("amount_cents")
+    if no and cents is not None:
+        return "no+amt|%s|%s" % (no, cents)
+    code = (r or {}).get("code")
+    if no and code:
+        return "code+no|%s|%s" % (code, no)
+    return ""
 
 
 def load_config():
@@ -643,6 +1221,15 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
         rec = led["records"].get(p)
         unchanged = rec and rec.get("mtime") == st.st_mtime and rec.get("size") == st.st_size
         if unchanged and rec.get("parse_sig") == parse_sig:
+            # 一次性故障自愈：上次走了 AI 兜底仍缺关键字段（如销售方），而本机识别现已可用
+            # → 本轮强制重解析一次（本机识别免费、离线）。重解析后 engine 变为 local，
+            #   即使仍缺字段也不会再进此分支，避免每轮空转。
+            _warn_txt = rec.get("warn") or ""
+            if ("需复核" in _warn_txt and local_ocr_ready()
+                    and (rec.get("ocr_engine") == "ai"
+                         or (rec.get("ocr") and rec.get("ocr_engine") is None))):
+                todo.append((p, st))
+                continue
             if (rec.get("ocr") and rec.get("warn") == "PDF无可用文本层且未完成OCR(需配置ZHIPUAI_API_KEY)"
                     and all(rec.get(k) is not None for k in ("no", "amount_cents", "date", "seller"))):
                 rec["warn"] = None
@@ -670,6 +1257,8 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
         for (p, st), (fields, warn) in zip(todo, parsed):
             old = led["records"].get(p)
             md5hex = file_md5(p)
+            issues = validate_fields(fields)
+            buyer_status, _buyer = check_buyer(fields, buyers)
             fp = fingerprint(fields, md5hex)
             cls_text = os.path.basename(p) + "|" + (fields.get("seller") or "") + "|" + \
                 " ".join(fields.get("items") or []) + "|" + \
@@ -684,13 +1273,19 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
                 "seller": fields.get("seller"), "buyer": fields.get("buyer"),
                 "kind": fields.get("kind"), "items": fields.get("items"),
                 "svc": fields.get("svc"),
-                "ocr": fields.get("ocr", False), "warn": warn,
+                "ocr": fields.get("ocr", False), "ocr_engine": fields.get("ocr_engine"),
+                "warn": warn,
                 "fp": fp, "cls_text": cls_text[:6000], "parse_sig": parse_sig, "cat_sig": cat_sig,
                 "cat_id": old.get("cat_id") if old and old.get("cat_rule") == "人工" else None,
                 "cat_label": old.get("cat_label") if old and old.get("cat_rule") == "人工" else None,
                 "cat_rule": old.get("cat_rule") if old and old.get("cat_rule") == "人工" else None,
                 "used_override": old.get("used_override", False) if old else False,
                 "used_override_set": old.get("used_override_set", False) if old else False,
+                "check_issues": issues, "buyer_status": buyer_status,
+                "verify_status": old.get("verify_status", "未查验") if old else "未查验",
+                "reject_reason": old.get("reject_reason", "") if old else "",
+                "closed": old.get("closed", False) if old else False,
+                "file_missing": False,
                 "first_seen": old.get("first_seen", time.time()) if old else time.time(),
                 "updated": time.time(),
             }
@@ -700,12 +1295,16 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
                 rec["cat_label"] = next((c["label"] for c in categories if c["id"] == cid), cid)
             led["records"][p] = rec
 
-    # 2) 清理已从配置目录消失的记录
+    # 2) 文件消失时的处理：已报销/已结案/已查验的记录永久保留（财务留痕），其余才清理
     cfg_prefixes = tuple(os.path.normpath(d) for d in all_dirs if d)
     if cfg_prefixes:
         for p in list(led["records"]):
             if any(is_within(p, d) for d in cfg_prefixes) and not os.path.exists(p):
-                del led["records"][p]
+                r = led["records"][p]
+                if r.get("used_override") or r.get("closed") or r.get("verify_status"):
+                    r["file_missing"] = True
+                else:
+                    del led["records"][p]
 
     # 3) 内容查重（同源不判重：同一物理文件只有一条记录）
     recs = records_in_dirs(led, all_dirs)
@@ -718,6 +1317,15 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
     for r in recs:
         for w, k in r["fp"]:
             idx.setdefault(k, []).append(r)
+    # 已报销永久库注入：原文件即使被移走/删除，仍能持续查重
+    for it in load_used_ledger()["items"]:
+        ghost = {"path": "used://" + (used_item_key(it) or "unknown"),
+                 "origin_path": it.get("path") or "",
+                 "folder": "已报销库", "fname": it.get("fname") or "（历史台账记录）",
+                 "is_used": True, "ghost": True, "no": it.get("no"),
+                 "amount_cents": it.get("amount_cents"), "batch": it.get("batch")}
+        for w, k in fingerprint(it, None):
+            idx.setdefault(k, []).append(ghost)
     for r in recs:
         r["dups"] = []
         seenp = set()
@@ -729,11 +1337,15 @@ def build_scan(watch_dirs, used_dirs, ocr_enabled, ocr_model):
                      "销方+金额+日期一致" if k.startswith("sel+amt+date|") else w)
             for o in idx.get(k, []):
                 if o["path"] != r["path"] and o["path"] not in seenp:
+                    # 永久库里就是它自己时不判重，避免结案后自匹配
+                    if o.get("origin_path") and o["origin_path"] == r["path"]:
+                        continue
                     seenp.add(o["path"])
                     r["dups"].append({"level": "高危" if w != "low" else "疑似", "basis": basis,
                                       "fname": o["fname"], "folder": o["folder"],
                                       "path": o["path"], "no": o.get("no"),
-                                      "amount": o.get("amount_cents"), "is_used": o["is_used"]})
+                                      "amount": o.get("amount_cents"), "is_used": o["is_used"],
+                                      "ghost": bool(o.get("ghost")), "batch": o.get("batch", "")})
     save_ledger(led)
     return led, used_set, recs
 
@@ -883,6 +1495,9 @@ class Handler(BaseHTTPRequestHandler):
             cfg["ocr_key_configured"] = bool(zhipu_key())
             cfg["key_masked"] = mask_key(zhipu_key())
             cfg["app_version"] = APP_VERSION
+            cfg["code_stale"] = code_stale()
+            cfg["local_ocr_ready"] = local_ocr_ready()
+            cfg["local_ocr_status"] = OCR_INSTALL.get("status", "idle")
             return self._send(200, json.dumps(cfg))
         if u.path == "/api/subdirs":
             # 列出所选目录的直接子目录，供「添加目录」多选勾选
@@ -954,6 +1569,36 @@ class Handler(BaseHTTPRequestHandler):
                 "Content-Disposition",
                 'attachment; filename="invoice_summary.xlsx"; filename*=UTF-8\'\''
                 + quote("发票分类汇总.xlsx"))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if u.path == "/api/ledger-status":
+            return self._send(200, json.dumps({
+                "error": LEDGER_STATUS.get("error"),
+                "record_count": LEDGER_STATUS.get("record_count", 0),
+                "used_count": len(load_used_ledger().get("items", [])),
+                "backups": list_backups(),
+            }, ensure_ascii=False))
+        if u.path == "/api/used-ledger":
+            items = load_used_ledger().get("items", [])
+            return self._send(200, json.dumps(
+                {"total": len(items), "items": items[-500:]}, ensure_ascii=False))
+        if u.path == "/api/export.worksheet":
+            recs = [r for r in collect_records()]
+            try:
+                data = export_worksheet(recs)
+            except ImportError:
+                return self._send(500, json.dumps(
+                    {"error": "缺少 openpyxl 组件，请先执行: pip install openpyxl"}, ensure_ascii=False))
+            from urllib.parse import quote
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="invoice_worksheet.xlsx"; filename*=UTF-8\'\''
+                + quote("发票审核底稿.xlsx"))
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1085,8 +1730,98 @@ class Handler(BaseHTTPRequestHandler):
                 if "used" in body:
                     r["used_override"] = bool(body["used"])
                     r["used_override_set"] = True
+                if "verify_status" in body:
+                    if body["verify_status"] not in VERIFY_CHOICES:
+                        return self._send(400, json.dumps({"error": "查验状态无效"}, ensure_ascii=False))
+                    r["verify_status"] = body["verify_status"]
+                if "reject_reason" in body:
+                    r["reject_reason"] = body["reject_reason"] if body["reject_reason"] in REJECT_CHOICES else ""
                 save_ledger(led)
             return self._send(200, json.dumps({"ok": True}))
+        if u.path == "/api/review":
+            """批量设置查验状态 / 退回原因（财务核验）。"""
+            body = self._read_json()
+            paths = body.get("paths") or []
+            with STATE_LOCK:
+                led = load_ledger()
+                n = 0
+                for p in paths:
+                    r = led["records"].get(p)
+                    if not r:
+                        continue
+                    if body.get("verify_status") in VERIFY_CHOICES:
+                        r["verify_status"] = body["verify_status"]
+                    if "reject_reason" in body:
+                        r["reject_reason"] = body["reject_reason"] if body["reject_reason"] in REJECT_CHOICES else ""
+                    n += 1
+                save_ledger(led)
+            return self._send(200, json.dumps({"ok": True, "updated": n}, ensure_ascii=False))
+        if u.path == "/api/restore-ledger":
+            try:
+                n = restore_ledger(self._read_json().get("name") or "")
+                return self._send(200, json.dumps(
+                    {"ok": True, "records": n, "message": "已还原 %d 条台账记录，请重新查重。" % n},
+                    ensure_ascii=False))
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}, ensure_ascii=False))
+        if u.path == "/api/import-history":
+            """N3 冷启动：导入财务已有的历史台账（CSV/Excel 另存为 CSV）。"""
+            body = self._read_json()
+            items = parse_history_csv(body.get("csv") or "")
+            if not items:
+                return self._send(400, json.dumps(
+                    {"error": "未识别到有效记录，请确认文件含发票号码或「金额+开票日期」两列"},
+                    ensure_ascii=False))
+            with STATE_LOCK:
+                added = used_ledger_add(items, body.get("batch") or "历史导入")
+            return self._send(200, json.dumps(
+                {"ok": True, "total": len(items), "added": added,
+                 "message": "解析 %d 条，新增 %d 条进入已报销库（重复自动跳过）。" % (len(items), added)},
+                ensure_ascii=False))
+        if u.path == "/api/close-batch":
+            """N1 结案：本批入库已报销 + 可选规范命名归档，一次走完 SOP 最后一环。"""
+            import shutil as _shutil
+            body = self._read_json()
+            paths = body.get("paths") or []
+            batch = (body.get("batch") or "").strip() or time.strftime("%Y-%m")
+            do_archive = bool(body.get("archive"))
+            with STATE_LOCK:
+                led = load_ledger()
+                picked = [led["records"][p] for p in paths if p in led["records"]]
+                if not picked:
+                    return self._send(400, json.dumps({"error": "请先勾选要结案的发票"}, ensure_ascii=False))
+                for r in picked:
+                    r["closed"] = True
+                    r["closed_at"] = time.time()
+                    r["used_override"] = True
+                    r["used_override_set"] = True
+                    r["is_used"] = True
+                save_ledger(led)
+                added = used_ledger_add(picked, batch)
+                copied, skipped = [], []
+                if do_archive:
+                    target = (load_config().get("archive_dir") or "").strip()
+                    if not target or not os.path.isdir(target):
+                        skipped.append("归档目录未设置或不存在，已跳过归档")
+                    else:
+                        for r in picked:
+                            src = r.get("path")
+                            if not src or not os.path.isfile(src):
+                                skipped.append(r.get("fname") or src)
+                                continue
+                            dst = os.path.join(target, archive_name(r))
+                            base, ext = os.path.splitext(dst)
+                            i = 1
+                            while os.path.exists(dst):
+                                dst = "%s(%d)%s" % (base, i, ext)
+                                i += 1
+                            _shutil.copy2(src, dst)
+                            copied.append(os.path.basename(dst))
+            # 无号码且无金额的票无法生成唯一键，必须明确告知，否则下月查不出来
+            no_key = [r.get("fname") or r.get("path") for r in picked if not used_item_key(r)]
+            return self._send(200, json.dumps(
+                {"ok": True, "closed": len(picked), "added": added,
+                 "no_key": no_key, "copied": copied, "skipped": skipped}, ensure_ascii=False))
         if u.path == "/api/extract":
             import shutil
             body = self._read_json()
@@ -1137,6 +1872,7 @@ def main():
         return 0
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     url = "http://127.0.0.1:%d" % a.port
+    ensure_local_ocr_async()  # 未装本机识别组件时后台静默安装，用户无感知
     print("发票管家已启动: %s  (Ctrl+C 退出)" % url)
     if not a.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

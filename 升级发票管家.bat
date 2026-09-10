@@ -1,9 +1,9 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 cd /d "%~dp0"
 title Invoice Manager Updater
 echo ============================================
-echo   å‘ç¥¨ç®¡å®¶ - åœ¨çº¿å‡çº§
+echo   ·¢Æ±¹Ü¼Ò - ÔÚÏßÉý¼¶
 echo ============================================
 echo.
 set "PYEXE="
@@ -17,7 +17,7 @@ set "PYEXE=python"
 :run
 %PYEXE% update.py %1 %2
 if errorlevel 1 goto fail
-echo æ­£åœ¨æ£€æŸ¥å‡çº§åŽçš„ä¾èµ–...
+echo ÕýÔÚ¼ì²éÉý¼¶ºóµÄÒÀÀµ...
 %PYEXE% -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if errorlevel 1 %PYEXE% -m pip install -r requirements.txt
 if errorlevel 1 goto fail
@@ -26,20 +26,20 @@ if errorlevel 1 goto portbusy
 ping -n 2 127.0.0.1 >nul
 start "" %PYEXE% app.py
 echo.
-echo å‡çº§å®Œæˆï¼Œå‘ç¥¨ç®¡å®¶å·²é‡å¯ï¼Œæµè§ˆå™¨å°†è‡ªåŠ¨æ‰“å¼€ã€‚
+echo Éý¼¶Íê³É£¬·¢Æ±¹Ü¼ÒÒÑÖØÆô£¬ä¯ÀÀÆ÷½«×Ô¶¯´ò¿ª¡£
 exit /b 0
 
 :fail
 echo.
-echo å‡çº§æœªå®Œæˆã€‚è‹¥æç¤ºç½‘ç»œé—®é¢˜ï¼Œå¯å…ˆè®¾ç½®ä»£ç†å†é‡è¯•ï¼š
-echo   1. æ‰“å¼€ cmd æ‰§è¡Œ:  set HTTPS_PROXY=http://127.0.0.1:7890  ï¼ˆç«¯å£æŒ‰å®žé™…å¡«ï¼‰
-echo   2. åœ¨åŒä¸€ä¸ª cmd çª—å£é‡Œé‡æ–°è¿è¡Œæœ¬å‡çº§è„šæœ¬
+echo Éý¼¶Î´Íê³É¡£ÈôÌáÊ¾ÍøÂçÎÊÌâ£¬¿ÉÏÈÉèÖÃ´úÀíÔÙÖØÊÔ£º
+echo   1. ´ò¿ª cmd Ö´ÐÐ:  set HTTPS_PROXY=http://127.0.0.1:7890  £¨¶Ë¿Ú°´Êµ¼ÊÌî£©
+echo   2. ÔÚÍ¬Ò»¸ö cmd ´°¿ÚÀïÖØÐÂÔËÐÐ±¾Éý¼¶½Å±¾
 echo.
 pause
 exit /b 1
 
 :portbusy
 echo.
-echo ä»£ç å·²æ›´æ–°ï¼Œä½†ç«¯å£ 8765 è¢«å…¶ä»–ç¨‹åºå ç”¨ï¼Œæœªç»“æŸè¯¥ç¨‹åºã€‚è¯·å…³é—­å ç”¨ç¨‹åºåŽåŒå‡»â€œå¯åŠ¨å‘ç¥¨ç®¡å®¶.batâ€ã€‚
+echo ´úÂëÒÑ¸üÐÂ£¬µ«¶Ë¿Ú 8765 ±»ÆäËû³ÌÐòÕ¼ÓÃ£¬Î´½áÊø¸Ã³ÌÐò¡£Çë¹Ø±ÕÕ¼ÓÃ³ÌÐòºóË«»÷¡°Æô¶¯·¢Æ±¹Ü¼Ò.bat¡±¡£
 pause
 exit /b 1

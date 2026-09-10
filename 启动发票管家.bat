@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 cd /d "%~dp0"
 rem only stop a confirmed Invoice Manager; never kill an unrelated service on 8765
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_server.ps1"
@@ -36,6 +36,6 @@ start "" "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" app.py
 exit /b 0
 
 :portbusy
-echo [å¤±è´¥] ç«¯å£ 8765 å·²è¢«å…¶ä»–ç¨‹åºå ç”¨ï¼Œæœªç»“æŸè¯¥ç¨‹åºã€‚è¯·å…ˆå…³é—­å ç”¨ç¨‹åºåé‡è¯•ã€‚
+echo [Ê§°Ü] ¶Ë¿Ú 8765 ÒÑ±»ÆäËû³ÌĞòÕ¼ÓÃ£¬Î´½áÊø¸Ã³ÌĞò¡£ÇëÏÈ¹Ø±ÕÕ¼ÓÃ³ÌĞòºóÖØÊÔ¡£
 pause
 exit /b 1

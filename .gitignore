@@ -9,3 +9,9 @@ invoice_ledger.json
 release/
 python_path.txt
 .workbuddy/
+# 运行期产生的数据与本地产出，不进版本库
+used_ledger.json
+backups/
+outputs/
+*.log
+.wmi_launch.log

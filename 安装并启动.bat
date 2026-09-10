@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
 title Invoice Manager Installer
@@ -9,35 +9,35 @@ if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
 if defined PYEXE goto deps
 
 echo ==================================================
-echo   å‘ç¥¨ç®¡å®¶ - ä¸€é”®å®‰è£…å¹¶å¯åŠ¨
+echo   ·¢Æ±¹Ü¼Ò - Ò»¼ü°²×°²¢Æô¶¯
 echo ==================================================
 echo.
-echo [1/4] æ£€æµ‹å¯ç”¨çš„ Pythonï¼ˆè‡ªåŠ¨è·³è¿‡å¾®è½¯å•†åº—å ä½ç¨‹åºï¼‰...
+echo [1/4] ¼ì²â¿ÉÓÃµÄ Python£¨×Ô¶¯Ìø¹ýÎ¢ÈíÉÌµêÕ¼Î»³ÌÐò£©...
 
 call :detectpy
 if errorlevel 1 goto winget
-echo       ä½¿ç”¨ Python: %PYEXE%
+echo       Ê¹ÓÃ Python: %PYEXE%
 goto venv
 
 :winget
-echo [1/4] æ²¡æœ‰æ‰¾åˆ°çŽ°æˆ Pythonï¼Œå°è¯•ç”¨ winget è‡ªåŠ¨å®‰è£…ï¼ˆçº¦ 2-5 åˆ†é’Ÿï¼Œæ— éœ€ç®¡ç†å‘˜ï¼‰...
+echo [1/4] Ã»ÓÐÕÒµ½ÏÖ³É Python£¬³¢ÊÔÓÃ winget ×Ô¶¯°²×°£¨Ô¼ 2-5 ·ÖÖÓ£¬ÎÞÐè¹ÜÀíÔ±£©...
 where winget >nul 2>nul || goto nopython
 winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
 if errorlevel 1 goto nopython
 call :detectpy
 if errorlevel 1 goto nopython
-echo       ä½¿ç”¨ Python: %PYEXE%
+echo       Ê¹ÓÃ Python: %PYEXE%
 
 :venv
 echo.
-echo [2/4] åˆ›å»ºç‹¬ç«‹è¿è¡ŒçŽ¯å¢ƒ .venvï¼ˆå¦‚è¢«å®‰å…¨è½¯ä»¶æ‹¦æˆªè¯·é€‰æ‹©å…è®¸ï¼‰...
+echo [2/4] ´´½¨¶ÀÁ¢ÔËÐÐ»·¾³ .venv£¨Èç±»°²È«Èí¼þÀ¹½ØÇëÑ¡ÔñÔÊÐí£©...
 %PYEXE% -m venv .venv
 if errorlevel 1 goto venvfail
 set "PYEXE=.venv\Scripts\python.exe"
 goto deps
 
 :venvfail
-echo [æ³¨æ„] .venv åˆ›å»ºå¤±è´¥æˆ–æ®‹ç•™ä¸å®Œæ•´ï¼Œå·²æ¸…ç†ï¼Œæ”¹ç”¨ --user æ¨¡å¼ï¼ˆå…ç®¡ç†å‘˜ï¼‰é‡è¯• ...
+echo [×¢Òâ] .venv ´´½¨Ê§°Ü»ò²ÐÁô²»ÍêÕû£¬ÒÑÇåÀí£¬¸ÄÓÃ --user Ä£Ê½£¨Ãâ¹ÜÀíÔ±£©ÖØÊÔ ...
 rmdir /s /q .venv 2>nul
 set "PIPARGS=--user"
 set "MODE=user"
@@ -51,7 +51,7 @@ if not "%PYEXE%"==".venv\Scripts\python.exe" goto depcheck
 if errorlevel 1 goto venvfail
 :depcheck
 echo.
-echo [3/4] æ£€æŸ¥å¹¶å®‰è£…ä¾èµ–ï¼ˆä¼˜å…ˆæ¸…åŽé•œåƒï¼Œå¤±è´¥å›žé€€å®˜æ–¹æºï¼‰...
+echo [3/4] ¼ì²é²¢°²×°ÒÀÀµ£¨ÓÅÏÈÇå»ª¾µÏñ£¬Ê§°Ü»ØÍË¹Ù·½Ô´£©...
 %PYEXE% -m pip show pypdf >nul 2>nul
 if errorlevel 1 goto installdeps
 %PYEXE% -m pip show openpyxl >nul 2>nul
@@ -60,14 +60,31 @@ goto already
 :installdeps
 %PYEXE% -m pip install %PIPARGS% -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto start
-echo       æ¸…åŽé•œåƒå®‰è£…å¤±è´¥ï¼Œæ”¹ç”¨å®˜æ–¹æºé‡è¯• ...
+echo       Çå»ª¾µÏñ°²×°Ê§°Ü£¬¸ÄÓÃ¹Ù·½Ô´ÖØÊÔ ...
 %PYEXE% -m pip install %PIPARGS% -r requirements.txt
 if not errorlevel 1 goto start
 goto pipfail
 
 :already
-echo       ä¾èµ–å·²å®‰è£…è¿‡ï¼Œè·³è¿‡å®‰è£…ã€‚
+echo       ÒÀÀµÒÑ°²×°¹ý£¬Ìø¹ý°²×°¡£
 
+
+echo.
+echo [¿ÉÑ¡] °²×°±¾µØÊ¶±ð×é¼þ£¨Í¼Æ¬¡¢É¨Ãè¼þÃâ Key Ê¶±ð£¬Ô¼ 100MB£©...
+%PYEXE% -m pip show rapidocr-onnxruntime >nul 2>nul
+if errorlevel 1 goto ocrinstall
+echo       ¼ì²â½á¹û£º±¾µØÊ¶±ð×é¼þÒÑ¾ÍÐ÷¡£
+goto ocrdone
+:ocrinstall
+%PYEXE% -m pip install %PIPARGS% -r requirements-ocr.txt -i https://pypi.tuna.tsinghua.edu.cn/simple >nul 2>nul
+if errorlevel 1 %PYEXE% -m pip install %PIPARGS% -r requirements-ocr.txt >nul 2>nul
+%PYEXE% -m pip show rapidocr-onnxruntime >nul 2>nul
+if errorlevel 1 goto ocrfail
+echo       ¼ì²â½á¹û£º±¾µØÊ¶±ð×é¼þ°²×°Íê³É¡£
+goto ocrdone
+:ocrfail
+echo       Ìø¹ý£º±¾µØÊ¶±ð×é¼þÎ´×°ÉÏ£¬²»Ó°ÏìÊ¹ÓÃ£¬Í¼Æ¬Æ±ÈÔ¿ÉÓÃ AI Ê¶±ð»òÊÖ¹¤Â¼Èë¡£
+:ocrdone
 :start
 >python_path.txt echo %PYEXE%
 rem only stop a confirmed Invoice Manager; never kill an unrelated service on 8765
@@ -75,45 +92,45 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_server.ps1"
 if errorlevel 1 goto portbusy
 ping -n 2 127.0.0.1 >nul
 echo.
-echo [4/4] å¯åŠ¨å‘ç¥¨ç®¡å®¶ ...
-echo       æœåŠ¡åœ°å€ http://127.0.0.1:8765 ï¼Œæµè§ˆå™¨å°†è‡ªåŠ¨æ‰“å¼€ã€‚
+echo [4/4] Æô¶¯·¢Æ±¹Ü¼Ò ...
+echo       ·þÎñµØÖ· http://127.0.0.1:8765 £¬ä¯ÀÀÆ÷½«×Ô¶¯´ò¿ª¡£
 start "" %PYEXE% app.py
-echo å®Œæˆï¼æœ¬çª—å£å¯ä»¥å…³é—­ï¼Œä»¥åŽå¯åŠ¨è¯·åŒå‡» å¯åŠ¨å‘ç¥¨ç®¡å®¶.batã€‚
+echo Íê³É£¡±¾´°¿Ú¿ÉÒÔ¹Ø±Õ£¬ÒÔºóÆô¶¯ÇëË«»÷ Æô¶¯·¢Æ±¹Ü¼Ò.bat¡£
 ping -n 7 127.0.0.1 >nul
 exit /b 0
 
 :pipfail
 echo.
-echo [å¤±è´¥] ä¾èµ–å®‰è£…æœªå®Œæˆï¼Œä¸€èˆ¬æ˜¯ç½‘ç»œåŽŸå› ï¼ˆä¸¤å¤„é•œåƒæºéƒ½è¿žä¸ä¸Šï¼‰ã€‚
+echo [Ê§°Ü] ÒÀÀµ°²×°Î´Íê³É£¬Ò»°ãÊÇÍøÂçÔ­Òò£¨Á½´¦¾µÏñÔ´¶¼Á¬²»ÉÏ£©¡£
 echo.
-echo   å…³äºŽä»£ç†ï¼šæœ¬è„šæœ¬ä¸ä¼šè‡ªåŠ¨é…ç½®ä»£ç†ã€‚å¦‚æžœæ‚¨ç”µè„‘éœ€è¦ä»£ç†æ‰èƒ½ä¸Šç½‘ï¼š
-echo     1. æ‰“å¼€ cmdï¼Œå…ˆæ‰§è¡Œä¸‹é¢ä¸¤è¡Œï¼ˆç«¯å£æ¢æˆæ‚¨è‡ªå·±çš„ï¼Œå¦‚ 7890ï¼‰:
+echo   ¹ØÓÚ´úÀí£º±¾½Å±¾²»»á×Ô¶¯ÅäÖÃ´úÀí¡£Èç¹ûÄúµçÄÔÐèÒª´úÀí²ÅÄÜÉÏÍø£º
+echo     1. ´ò¿ª cmd£¬ÏÈÖ´ÐÐÏÂÃæÁ½ÐÐ£¨¶Ë¿Ú»»³ÉÄú×Ô¼ºµÄ£¬Èç 7890£©:
 echo        set HTTP_PROXY=http://127.0.0.1:7890
 echo        set HTTPS_PROXY=http://127.0.0.1:7890
-echo     2. åœ¨åŒä¸€ä¸ª cmd çª—å£é‡Œé‡æ–°è¿è¡Œæœ¬è„šæœ¬ã€‚
-echo   å¦‚æžœä¸éœ€è¦ä»£ç†ï¼šè¯·æš‚æ—¶å…³é—­é˜²ç«å¢™/å®‰å…¨è½¯ä»¶ï¼Œæˆ–æ¢æ‰‹æœºçƒ­ç‚¹åŽå†è¯•ã€‚
+echo     2. ÔÚÍ¬Ò»¸ö cmd ´°¿ÚÀïÖØÐÂÔËÐÐ±¾½Å±¾¡£
+echo   Èç¹û²»ÐèÒª´úÀí£ºÇëÔÝÊ±¹Ø±Õ·À»ðÇ½/°²È«Èí¼þ£¬»ò»»ÊÖ»úÈÈµãºóÔÙÊÔ¡£
 echo.
 pause
 exit /b 1
 
 :portbusy
 echo.
-echo [å¤±è´¥] ç«¯å£ 8765 å·²è¢«å…¶ä»–ç¨‹åºå ç”¨ï¼Œæœªç»“æŸè¯¥ç¨‹åºã€‚è¯·å…ˆå…³é—­å ç”¨ç¨‹åºåŽé‡è¯•ã€‚
+echo [Ê§°Ü] ¶Ë¿Ú 8765 ÒÑ±»ÆäËû³ÌÐòÕ¼ÓÃ£¬Î´½áÊø¸Ã³ÌÐò¡£ÇëÏÈ¹Ø±ÕÕ¼ÓÃ³ÌÐòºóÖØÊÔ¡£
 pause
 exit /b 1
 
 :nopython
 echo.
-echo [å¤±è´¥] æ²¡æœ‰æ‰¾åˆ°å¯ç”¨çš„ Pythonï¼ˆéœ€è¦ 3.8 æˆ–æ›´é«˜ç‰ˆæœ¬ï¼‰ã€‚
+echo [Ê§°Ü] Ã»ÓÐÕÒµ½¿ÉÓÃµÄ Python£¨ÐèÒª 3.8 »ò¸ü¸ß°æ±¾£©¡£
 echo.
-echo   æƒ…å†µä¸€ï¼šç”µè„‘ä¸Šç¡®å®žæ²¡æœ‰å®‰è£… Python
-echo     è¯·åˆ° https://www.python.org/downloads/windows/ ä¸‹è½½å®‰è£…ï¼Œ
-echo     å®‰è£…ç¬¬ä¸€æ­¥åŠ¡å¿…å‹¾é€‰ "Add python.exe to PATH"ï¼Œè£…å®Œé‡æ–°è¿è¡Œæœ¬è„šæœ¬ã€‚
+echo   Çé¿öÒ»£ºµçÄÔÉÏÈ·ÊµÃ»ÓÐ°²×° Python
+echo     Çëµ½ https://www.python.org/downloads/windows/ ÏÂÔØ°²×°£¬
+echo     °²×°µÚÒ»²½Îñ±Ø¹´Ñ¡ "Add python.exe to PATH"£¬×°ÍêÖØÐÂÔËÐÐ±¾½Å±¾¡£
 echo.
-echo   æƒ…å†µäºŒï¼šè£…äº† Pythonï¼Œä½†ä¸€è¿è¡Œå°±è·³å‡ºå¾®è½¯å•†åº—
-echo     è¿™æ˜¯å•†åº—å ä½ç¨‹åºåœ¨æ£ä¹±ã€‚æ‰“å¼€ Windows è®¾ç½® ^> åº”ç”¨ ^> é«˜çº§åº”ç”¨è®¾ç½®
-echo     ^> åº”ç”¨æ‰§è¡Œåˆ«åï¼ŒæŠŠ python.exe ä¸Ž python3.exe ä¸¤ä¸ªå¼€å…³å…³æŽ‰ï¼Œ
-echo     å†é‡æ–°è¿è¡Œæœ¬è„šæœ¬ï¼ˆæœ¬è„šæœ¬ä¼šè‡ªåŠ¨æ‰¾åˆ°çœŸæ­£çš„ Pythonï¼‰ã€‚
+echo   Çé¿ö¶þ£º×°ÁË Python£¬µ«Ò»ÔËÐÐ¾ÍÌø³öÎ¢ÈíÉÌµê
+echo     ÕâÊÇÉÌµêÕ¼Î»³ÌÐòÔÚµ·ÂÒ¡£´ò¿ª Windows ÉèÖÃ ^> Ó¦ÓÃ ^> ¸ß¼¶Ó¦ÓÃÉèÖÃ
+echo     ^> Ó¦ÓÃÖ´ÐÐ±ðÃû£¬°Ñ python.exe Óë python3.exe Á½¸ö¿ª¹Ø¹Øµô£¬
+echo     ÔÙÖØÐÂÔËÐÐ±¾½Å±¾£¨±¾½Å±¾»á×Ô¶¯ÕÒµ½ÕæÕýµÄ Python£©¡£
 echo.
 pause
 exit /b 1
